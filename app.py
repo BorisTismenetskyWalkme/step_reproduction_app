@@ -15,6 +15,13 @@ APP_VERSION = "3.3"
 BS_USERNAME = os.environ.get("AUTOMATION_BS_USER", "")
 BS_ACCESS_KEY = os.environ.get("AUTOMATION_BS_PASS", "")
 
+# Detect serverless environments (Vercel/Render) - disable heavy memory operations
+IS_SERVERLESS = bool(os.environ.get('VERCEL') or os.environ.get('RENDER'))
+if IS_SERVERLESS:
+    print("Running in serverless mode (Vercel/Render) - heavy memory operations disabled")
+else:
+    print("Running locally - all features enabled (network logs, last successful run search)")
+
 if not BS_USERNAME or not BS_ACCESS_KEY:
     print("WARNING: BrowserStack credentials not set in environment variables.")
     print("Set AUTOMATION_BS_USER and AUTOMATION_BS_PASS environment variables.")
@@ -1260,8 +1267,85 @@ def fetch_logs(session_id, auth_token=None):
 
 
 def fetch_walkme_network_logs(session_id, auth_token=None):
-    """Disabled on serverless to prevent memory overflow. Returns empty list."""
-    return []
+    """Fetch network logs from BrowserStack and filter only walkme.com related requests.
+    Disabled automatically on serverless environments (Vercel/Render) to prevent memory overflow."""
+    if IS_SERVERLESS:
+        return []
+
+    import json as json_module
+    auth = (BS_USERNAME, BS_ACCESS_KEY) if BS_USERNAME and BS_ACCESS_KEY else None
+    token_param = f"?auth_token={auth_token}" if auth_token else ""
+    network_logs_endpoint = f"https://api.browserstack.com/automate/sessions/{session_id}/networklogs"
+    walkme_requests = []
+
+    try:
+        response = None
+        if auth:
+            response = requests.get(network_logs_endpoint, auth=auth, timeout=60)
+        if (not response or response.status_code != 200) and auth_token:
+            response = requests.get(network_logs_endpoint + token_param, timeout=60)
+
+        if response and response.status_code == 200:
+            try:
+                har_data = response.json()
+                entries = []
+                if isinstance(har_data, dict):
+                    if 'log' in har_data and 'entries' in har_data['log']:
+                        entries = har_data['log']['entries']
+                    elif 'entries' in har_data:
+                        entries = har_data['entries']
+                elif isinstance(har_data, list):
+                    entries = har_data
+
+                for entry in entries[:500]:
+                    request_data = entry.get('request', {})
+                    response_data = entry.get('response', {})
+                    url = request_data.get('url', '')
+                    if 'walkme.com' in url.lower() or 'walkme' in url.lower():
+                        filtered_entry = {
+                            'url': url,
+                            'method': request_data.get('method', 'GET'),
+                            'status': response_data.get('status', 0),
+                            'statusText': response_data.get('statusText', ''),
+                            'time': entry.get('time', 0),
+                            'startedDateTime': entry.get('startedDateTime', ''),
+                            'request_headers': request_data.get('headers', []),
+                            'response_headers': response_data.get('headers', []),
+                            'request_body': '',
+                            'response_body': ''
+                        }
+                        post_data = request_data.get('postData', {})
+                        if post_data:
+                            filtered_entry['request_body'] = post_data.get('text', '')[:1000]
+                        content = response_data.get('content', {})
+                        if content:
+                            response_text = content.get('text', '')
+                            if len(response_text) > 5000:
+                                response_text = response_text[:5000] + '... [truncated]'
+                            filtered_entry['response_body'] = response_text
+                        walkme_requests.append(filtered_entry)
+                        if len(walkme_requests) >= 100:
+                            break
+
+            except json_module.JSONDecodeError:
+                print("Network logs are not in JSON format, trying to parse as text")
+                lines = response.text.split('\n')
+                for line in lines:
+                    if 'walkme' in line.lower():
+                        walkme_requests.append({
+                            'url': line.strip(), 'method': 'N/A', 'status': 'N/A',
+                            'statusText': '', 'time': 0, 'startedDateTime': '',
+                            'request_headers': [], 'response_headers': [],
+                            'request_body': '', 'response_body': ''
+                        })
+        else:
+            print(f"Failed to fetch network logs: {response.status_code if response else 'No response'}")
+
+    except Exception as e:
+        print(f"Error fetching network logs: {e}")
+
+    print(f"Found {len(walkme_requests)} WalkMe-related network requests")
+    return walkme_requests
 
 
 def fetch_video(video_url):
@@ -1383,8 +1467,128 @@ def get_test_name_without_random(test_name):
 
 
 def find_last_successful_run(test_name, current_session_id, current_build_id=None):
-    """Disabled on serverless to prevent memory overflow. Returns None."""
-    return None
+    """Find the last successful run of the same test by searching recent builds.
+    Disabled automatically on serverless environments (Vercel/Render) to prevent memory overflow."""
+    if IS_SERVERLESS:
+        return None
+
+    if not BS_USERNAME or not BS_ACCESS_KEY:
+        print("Cannot search for last successful run: BrowserStack credentials not set")
+        return None
+
+    auth = (BS_USERNAME, BS_ACCESS_KEY)
+    base_test_name = get_test_name_without_random(test_name)
+
+    if not base_test_name:
+        return None
+
+    project_match = re.search(r'\[([^\]]+)\]', base_test_name)
+    project_name = project_match.group(1) if project_match else None
+
+    print(f"Searching for last successful run of test: '{test_name}'")
+    print(f"  Looking for exact match: '{base_test_name}'")
+    if project_name:
+        print(f"  Project filter: '{project_name}'")
+
+    def search_build_sessions(search_build_id, search_build_name):
+        sessions_url = (
+            f"https://api.browserstack.com/automate/builds/"
+            f"{search_build_id}/sessions.json?limit=100"
+        )
+        try:
+            sr = requests.get(sessions_url, auth=auth, timeout=60)
+            if sr.status_code != 200:
+                return None, 0, 0
+            sessions = sr.json()
+            matching_project_count = 0
+            passed_count = 0
+            for session_data in sessions:
+                session = session_data.get("automation_session", {})
+                session_name = session.get("name", "")
+                session_status = session.get("status", "")
+                session_id = session.get("hashed_id", "")
+                if session_id == current_session_id:
+                    continue
+                if session_status != "passed":
+                    continue
+                passed_count += 1
+                session_base_name = get_test_name_without_random(session_name)
+                if project_name and project_name.lower() in session_name.lower():
+                    matching_project_count += 1
+                if session_base_name == base_test_name:
+                    created_at = session.get("created_at", "")
+                    public_url = session.get("public_url", "")
+                    if not public_url:
+                        public_url = (
+                            f"https://automate.browserstack.com/builds/"
+                            f"{search_build_id}/sessions/{session_id}"
+                        )
+                    return {
+                        "build_id": search_build_id,
+                        "build_name": search_build_name,
+                        "session_id": session_id,
+                        "session_name": session_name,
+                        "date": created_at,
+                        "public_url": public_url
+                    }, passed_count, matching_project_count
+            return None, passed_count, matching_project_count
+        except requests.RequestException as req_err:
+            print(f"Error fetching sessions for build {search_build_id}: {req_err}")
+            return None, 0, 0
+
+    try:
+        total_passed_sessions = 0
+        total_matching_project = 0
+
+        if current_build_id:
+            print(f"  First checking current build: {current_build_id}")
+            result, passed, matching = search_build_sessions(current_build_id, "Current Build")
+            total_passed_sessions += passed
+            total_matching_project += matching
+            if result:
+                print(f"  MATCH FOUND in same build: {result['session_name']}")
+                return result
+            else:
+                print(f"    No match in current build ({passed} passed, "
+                      f"{matching} with {project_name} project)")
+
+        builds_url = "https://api.browserstack.com/automate/builds.json?limit=20"
+        r = requests.get(builds_url, auth=auth, timeout=60)
+        if r.status_code != 200:
+            print(f"Failed to fetch builds: {r.status_code}")
+            return None
+
+        builds = r.json()
+        print(f"  Checking {len(builds)} recent builds...")
+        builds_with_project = []
+
+        for build_data in builds:
+            build = build_data.get("automation_build", {})
+            build_hashed_id = build.get("hashed_id", "")
+            build_name = build.get("name", "Unknown Build")
+            if build_hashed_id == current_build_id:
+                continue
+            result, passed, matching = search_build_sessions(build_hashed_id, build_name)
+            total_passed_sessions += passed
+            total_matching_project += matching
+            if result:
+                print(f"  MATCH FOUND: {result['session_name']} in build: {build_name}")
+                return result
+            if matching > 0:
+                builds_with_project.append(f"{build_name} ({matching} tests)")
+
+        print(f"  Summary: {total_passed_sessions} passed sessions, "
+              f"{total_matching_project} with {project_name} project")
+        if builds_with_project:
+            print(f"  Builds with {project_name} project:")
+            for b in builds_with_project[:10]:
+                print(f"    - {b}")
+        print("No previous successful run found with same test name and project")
+        return None
+
+    except Exception as e:
+        print(f"Error searching for last successful run: {e}")
+        return None
 
 
 def parse_steps(logs):
