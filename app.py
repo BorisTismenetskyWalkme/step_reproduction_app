@@ -1271,19 +1271,16 @@ def fetch_walkme_network_logs(session_id, auth_token=None):
 
     try:
         response = None
-        # Try with auth first
         if auth:
-            response = requests.get(network_logs_endpoint, auth=auth, timeout=60)
-        # Try with auth_token if auth failed or not available
+            response = requests.get(network_logs_endpoint, auth=auth, timeout=30)
         if (not response or response.status_code != 200) and auth_token:
-            response = requests.get(network_logs_endpoint + token_param, timeout=60)
+            response = requests.get(network_logs_endpoint + token_param, timeout=30)
 
         if response and response.status_code == 200:
-            # Network logs are in HAR format (HTTP Archive)
+            # Limit raw response size before parsing
+            raw = response.text[:2_000_000]  # max 2MB
             try:
-                har_data = response.json()
-
-                # HAR format has entries under log.entries
+                har_data = json_module.loads(raw)
                 entries = []
                 if isinstance(har_data, dict):
                     if 'log' in har_data and 'entries' in har_data['log']:
@@ -1293,14 +1290,12 @@ def fetch_walkme_network_logs(session_id, auth_token=None):
                 elif isinstance(har_data, list):
                     entries = har_data
 
-                for entry in entries[:500]:  # limit to 500 entries max
+                for entry in entries[:300]:  # max 300 entries
                     request_data = entry.get('request', {})
                     response_data = entry.get('response', {})
                     url = request_data.get('url', '')
 
-                    # Filter for walkme.com related requests
                     if 'walkme.com' in url.lower() or 'walkme' in url.lower():
-                        # Extract relevant information (skip large headers/bodies)
                         filtered_entry = {
                             'url': url,
                             'method': request_data.get('method', 'GET'),
@@ -1313,41 +1308,24 @@ def fetch_walkme_network_logs(session_id, auth_token=None):
                             'request_body': '',
                             'response_body': ''
                         }
-
-                        # Get request body if available (limit size)
                         post_data = request_data.get('postData', {})
                         if post_data:
-                            filtered_entry['request_body'] = post_data.get('text', '')[:1000]
-
-                        # Get response body if available (limit size)
+                            filtered_entry['request_body'] = post_data.get('text', '')[:500]
                         content = response_data.get('content', {})
                         if content:
                             response_text = content.get('text', '')
-                            if len(response_text) > 2000:
-                                response_text = response_text[:2000] + '... [truncated]'
-                            filtered_entry['response_body'] = response_text
-
+                            filtered_entry['response_body'] = response_text[:1000] + ('... [truncated]' if len(response_text) > 1000 else '')
                         walkme_requests.append(filtered_entry)
-                        if len(walkme_requests) >= 100:  # max 100 walkme entries
+                        if len(walkme_requests) >= 50:  # max 50 walkme entries
                             break
-
             except json_module.JSONDecodeError:
-                print("Network logs are not in JSON format, trying to parse as text")
-                # If not JSON, try to parse as text and filter lines containing walkme
-                lines = response.text.split('\n')
-                for line in lines:
+                for line in raw.split('\n')[:200]:
                     if 'walkme' in line.lower():
                         walkme_requests.append({
-                            'url': line.strip(),
-                            'method': 'N/A',
-                            'status': 'N/A',
-                            'statusText': '',
-                            'time': 0,
-                            'startedDateTime': '',
-                            'request_headers': [],
-                            'response_headers': [],
-                            'request_body': '',
-                            'response_body': ''
+                            'url': line.strip()[:500], 'method': 'N/A', 'status': 'N/A',
+                            'statusText': '', 'time': 0, 'startedDateTime': '',
+                            'request_headers': [], 'response_headers': [],
+                            'request_body': '', 'response_body': ''
                         })
         else:
             print(f"Failed to fetch network logs: {response.status_code if response else 'No response'}")
@@ -1510,7 +1488,7 @@ def find_last_successful_run(test_name, current_session_id, current_build_id=Non
     def search_build_sessions(search_build_id, search_build_name):
         sessions_url = (
             f"https://api.browserstack.com/automate/builds/"
-            f"{search_build_id}/sessions.json?limit=300"
+            f"{search_build_id}/sessions.json?limit=50"
         )
         try:
             sr = requests.get(sessions_url, auth=auth, timeout=60)
@@ -1588,7 +1566,7 @@ def find_last_successful_run(test_name, current_session_id, current_build_id=Non
                       f"{matching} with {project_name} project)")
 
         # SECOND: Search in other recent builds
-        builds_url = "https://api.browserstack.com/automate/builds.json?limit=100"
+        builds_url = "https://api.browserstack.com/automate/builds.json?limit=10"
         r = requests.get(builds_url, auth=auth, timeout=60)
         if r.status_code != 200:
             print(f"Failed to fetch builds: {r.status_code}")
