@@ -1223,6 +1223,9 @@ def fetch_session(session_id, auth_token=None):
     )
 
 
+MAX_LOG_SIZE = 500_000  # 500KB limit per log source
+
+
 def fetch_logs(session_id, auth_token=None):
     """Fetch text logs from BrowserStack which contain Selenium commands"""
     auth = (BS_USERNAME, BS_ACCESS_KEY) if BS_USERNAME and BS_ACCESS_KEY else None
@@ -1230,55 +1233,30 @@ def fetch_logs(session_id, auth_token=None):
     # Build query string for auth_token fallback
     token_param = f"?auth_token={auth_token}" if auth_token else ""
 
-    # Try different log endpoints to get the most useful data
+    # Only fetch the primary logs endpoint (not all 4) to save memory
     log_endpoints = [
         f"https://api.browserstack.com/automate/sessions/{session_id}/logs",
         f"https://api.browserstack.com/automate/sessions/{session_id}/seleniumlogs",
-        f"https://api.browserstack.com/automate/sessions/{session_id}/consolelogs",
-        f"https://api.browserstack.com/automate/sessions/{session_id}/networklogs"
     ]
 
     combined_logs = ""
     for endpoint in log_endpoints:
+        if len(combined_logs) >= MAX_LOG_SIZE:
+            break
         try:
-            # Try with auth first
             if auth:
                 r = requests.get(endpoint, auth=auth, timeout=30)
                 if r.status_code == 200 and r.text:
-                    combined_logs += r.text + "\n"
+                    combined_logs += r.text[:MAX_LOG_SIZE] + "\n"
                     continue
-            # Try with auth_token
             if auth_token:
                 r = requests.get(endpoint + token_param, timeout=30)
                 if r.status_code == 200 and r.text:
-                    combined_logs += r.text + "\n"
+                    combined_logs += r.text[:MAX_LOG_SIZE] + "\n"
         except Exception:
             continue
 
-    # Also try to get the raw session log URL from session details
-    try:
-        url = f"https://api.browserstack.com/automate/sessions/{session_id}.json"
-        session_r = None
-        if auth:
-            session_r = requests.get(url, auth=auth, timeout=30)
-        if (not session_r or session_r.status_code != 200) and auth_token:
-            session_r = requests.get(url + token_param, timeout=30)
-
-        if session_r and session_r.status_code == 200:
-            session_data = session_r.json()
-            if "automation_session" in session_data:
-                logs_url = session_data["automation_session"].get("logs")
-                if logs_url:
-                    # Try to fetch logs URL (it may be publicly accessible)
-                    log_r = requests.get(logs_url, timeout=30)
-                    if log_r.status_code != 200 and auth:
-                        log_r = requests.get(logs_url, auth=auth, timeout=30)
-                    if log_r.status_code == 200:
-                        combined_logs += log_r.text + "\n"
-    except Exception:
-        pass
-
-    return combined_logs
+    return combined_logs[:MAX_LOG_SIZE]
 
 
 def fetch_walkme_network_logs(session_id, auth_token=None):
@@ -1315,14 +1293,14 @@ def fetch_walkme_network_logs(session_id, auth_token=None):
                 elif isinstance(har_data, list):
                     entries = har_data
 
-                for entry in entries:
+                for entry in entries[:500]:  # limit to 500 entries max
                     request_data = entry.get('request', {})
                     response_data = entry.get('response', {})
                     url = request_data.get('url', '')
 
                     # Filter for walkme.com related requests
                     if 'walkme.com' in url.lower() or 'walkme' in url.lower():
-                        # Extract relevant information
+                        # Extract relevant information (skip large headers/bodies)
                         filtered_entry = {
                             'url': url,
                             'method': request_data.get('method', 'GET'),
@@ -1330,27 +1308,28 @@ def fetch_walkme_network_logs(session_id, auth_token=None):
                             'statusText': response_data.get('statusText', ''),
                             'time': entry.get('time', 0),
                             'startedDateTime': entry.get('startedDateTime', ''),
-                            'request_headers': request_data.get('headers', []),
-                            'response_headers': response_data.get('headers', []),
+                            'request_headers': [],
+                            'response_headers': [],
                             'request_body': '',
                             'response_body': ''
                         }
 
-                        # Get request body if available
+                        # Get request body if available (limit size)
                         post_data = request_data.get('postData', {})
                         if post_data:
-                            filtered_entry['request_body'] = post_data.get('text', '')
+                            filtered_entry['request_body'] = post_data.get('text', '')[:1000]
 
-                        # Get response body if available
+                        # Get response body if available (limit size)
                         content = response_data.get('content', {})
                         if content:
                             response_text = content.get('text', '')
-                            # Limit response body size for display
-                            if len(response_text) > 5000:
-                                response_text = response_text[:5000] + '... [truncated]'
+                            if len(response_text) > 2000:
+                                response_text = response_text[:2000] + '... [truncated]'
                             filtered_entry['response_body'] = response_text
 
                         walkme_requests.append(filtered_entry)
+                        if len(walkme_requests) >= 100:  # max 100 walkme entries
+                            break
 
             except json_module.JSONDecodeError:
                 print("Network logs are not in JSON format, trying to parse as text")
