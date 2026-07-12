@@ -2,7 +2,7 @@ services:
   - type: web
     name: step-reproduction-app
     runtime: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r step_reproduction_app/requirements.txt
     startCommand: python step_reproduction_app/app.py
     envVars:
       - key: AUTOMATION_BS_USER
