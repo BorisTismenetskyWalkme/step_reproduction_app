@@ -2378,7 +2378,9 @@ def index():
                     safe_test_name = re.sub(r'[<>:"/\\|?*\[\]]', '_', test_name)
                     safe_test_name = safe_test_name.strip()[:100]  # Limit length
                     file_name = f"{safe_test_name}.html"
-                    with open(file_name, "w", encoding="utf-8") as f:
+                    # Use /tmp for serverless environments (Vercel/Render read-only fs)
+                    tmp_path = os.path.join('/tmp', file_name)
+                    with open(tmp_path, "w", encoding="utf-8") as f:
                         f.write(html_content)
 
                     generated_file = file_name
@@ -2769,15 +2771,16 @@ def index():
 
 @app.route("/download/<filename>")
 def download(filename):
-    response = send_file(filename, as_attachment=True)
+    tmp_path = os.path.join('/tmp', filename)
+    response = send_file(tmp_path, as_attachment=True)
 
     # Schedule cleanup of the file after sending
     @response.call_on_close
     def cleanup():
         try:
-            if os.path.exists(filename):
-                os.remove(filename)
-                print(f"Cleaned up file: {filename}")
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+                print(f"Cleaned up file: {tmp_path}")
         except Exception as e:
             print(f"Failed to cleanup file {filename}: {e}")
 
