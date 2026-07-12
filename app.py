@@ -846,9 +846,9 @@ html, body {
                 🎬 Execution Video
             </div>
             <div class="video-container">
-                {% if video_base64 %}
+                {% if video_url %}
                 <video id="testVideo" controls>
-                    <source src="data:video/mp4;base64,{{ video_base64 }}" type="video/mp4">
+                    <source src="{{ video_url }}" type="video/mp4">
                     Your browser does not support the video tag.
                 </video>
                 <div class="speed-controls">
@@ -2538,12 +2538,9 @@ def index():
                     session = fetch_session(session_id, auth_token)
                     logs = fetch_logs(session_id, auth_token)
 
-                    # Get video URL (no longer downloading/processing frames)
+                    # Get video URL - used directly in template, no download needed
                     video_base64 = None
                     video_url = session.get("video_url", "")
-                    if video_url:
-                        print("Downloading video for embedding...")
-                        video_base64 = fetch_video(video_url)
 
                     # Parse steps (no screenshots needed)
                     steps = parse_steps(logs)
@@ -2640,7 +2637,6 @@ def index():
                         steps=steps,
                         error_reason=error_reason,
                         error_message=error_message,
-                        video_base64=video_base64,
                         video_url=video_url,
                         network_logs_url=network_logs_url,
                         console_logs_url=console_logs_url,
