@@ -4,16 +4,21 @@ import re
 import time
 
 import requests
-from flask import Flask, request, render_template_string, send_file
+from flask import Flask, request, render_template_string
 
 app = Flask(__name__)
 
 # App version
-APP_VERSION = "3.3"
+APP_VERSION = "3.4"
 
 # Fill your credentials manually here or prompt internally
 BS_USERNAME = os.environ.get("AUTOMATION_BS_USER", "")
 BS_ACCESS_KEY = os.environ.get("AUTOMATION_BS_PASS", "")
+
+# GitHub repo that hosts generated reports via GitHub Pages
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+GITHUB_REPO = os.environ.get("GITHUB_REPORTS_REPO", "BorisTismenetskyWalkme/step_reproduction_app")
+GITHUB_BRANCH = os.environ.get("GITHUB_REPORTS_BRANCH", "main")
 
 # Detect serverless environments (Vercel/Render) - disable heavy memory operations
 IS_SERVERLESS = bool(os.environ.get('VERCEL') or os.environ.get('RENDER'))
@@ -26,6 +31,10 @@ if not BS_USERNAME or not BS_ACCESS_KEY:
     print("WARNING: BrowserStack credentials not set in environment variables.")
     print("Set AUTOMATION_BS_USER and AUTOMATION_BS_PASS environment variables.")
     print("The app will try to use auth_token from the session URL if available.")
+
+if not GITHUB_TOKEN:
+    print("WARNING: GITHUB_TOKEN not set in environment variables.")
+    print("Report generation will fail until a GitHub token with contents write access is set.")
 
 
 def get_bs_build_hashed_id(build_name_or_hash):
@@ -1266,7 +1275,7 @@ def fetch_logs(session_id, auth_token=None):
     return combined_logs[:MAX_LOG_SIZE]
 
 
-def fetch_walkme_network_logs(session_id, auth_token=None):
+def fetch_walkme_network_logs(session_id: str, auth_token: str | None = None):
     """Fetch network logs from BrowserStack and filter only walkme.com related requests.
     Disabled automatically on serverless environments (Vercel/Render) to prevent memory overflow."""
     if IS_SERVERLESS:
@@ -1346,6 +1355,34 @@ def fetch_walkme_network_logs(session_id, auth_token=None):
 
     print(f"Found {len(walkme_requests)} WalkMe-related network requests")
     return walkme_requests
+
+
+def upload_html_to_github(file_name, html_content):
+    """Upload a generated report to GitHub so it can be viewed via GitHub Pages.
+
+    Returns the public GitHub Pages URL for the uploaded file.
+    """
+    if not GITHUB_TOKEN:
+        raise RuntimeError("GITHUB_TOKEN environment variable is not set.")
+
+    owner, repo = GITHUB_REPO.split("/", 1)
+    path = f"reports/{file_name}"
+    api_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+    }
+    payload = {
+        "message": f"Add reproduction report: {file_name}",
+        "content": base64.b64encode(html_content.encode("utf-8")).decode("utf-8"),
+        "branch": GITHUB_BRANCH,
+    }
+
+    response = requests.put(api_url, headers=headers, json=payload, timeout=30)
+    if response.status_code not in (200, 201):
+        raise RuntimeError(f"GitHub upload failed ({response.status_code}): {response.text}")
+
+    return f"https://{owner}.github.io/{repo}/{path}"
 
 
 def fetch_video(video_url):
@@ -1467,8 +1504,9 @@ def get_test_name_without_random(test_name):
 
 
 def find_last_successful_run(test_name, current_session_id, current_build_id=None):
-    """Find the last successful run of the same test by searching recent builds.
-    Disabled automatically on serverless environments (Vercel/Render) to prevent memory overflow."""
+    """Find the last successful run of the same test.
+    Disabled automatically on serverless environments (Vercel/Render) to prevent memory overflow.
+    """
     if IS_SERVERLESS:
         return None
 
@@ -1482,7 +1520,8 @@ def find_last_successful_run(test_name, current_session_id, current_build_id=Non
     if not base_test_name:
         return None
 
-    project_match = re.search(r'\[([^\]]+)\]', base_test_name)
+    # Extract project name from brackets for targeted debug
+    project_match = re.search(r'\[([^]]+)]', base_test_name)
     project_name = project_match.group(1) if project_match else None
 
     print(f"Searching for last successful run of test: '{test_name}'")
@@ -1490,31 +1529,45 @@ def find_last_successful_run(test_name, current_session_id, current_build_id=Non
     if project_name:
         print(f"  Project filter: '{project_name}'")
 
+    # Helper function to search sessions in a build
     def search_build_sessions(search_build_id, search_build_name):
         sessions_url = (
             f"https://api.browserstack.com/automate/builds/"
-            f"{search_build_id}/sessions.json?limit=100"
+            f"{search_build_id}/sessions.json?limit=300"
         )
         try:
             sr = requests.get(sessions_url, auth=auth, timeout=60)
             if sr.status_code != 200:
                 return None, 0, 0
+
             sessions = sr.json()
             matching_project_count = 0
             passed_count = 0
+
             for session_data in sessions:
                 session = session_data.get("automation_session", {})
                 session_name = session.get("name", "")
                 session_status = session.get("status", "")
                 session_id = session.get("hashed_id", "")
+
+                # Skip current session
                 if session_id == current_session_id:
                     continue
+
+                # Only consider passed sessions
                 if session_status != "passed":
                     continue
+
                 passed_count += 1
+
+                # Get base name for comparison
                 session_base_name = get_test_name_without_random(session_name)
+
+                # Count tests with matching project name
                 if project_name and project_name.lower() in session_name.lower():
                     matching_project_count += 1
+
+                # Exact match required: same test name AND same project
                 if session_base_name == base_test_name:
                     created_at = session.get("created_at", "")
                     public_url = session.get("public_url", "")
@@ -1523,6 +1576,7 @@ def find_last_successful_run(test_name, current_session_id, current_build_id=Non
                             f"https://automate.browserstack.com/builds/"
                             f"{search_build_id}/sessions/{session_id}"
                         )
+
                     return {
                         "build_id": search_build_id,
                         "build_name": search_build_name,
@@ -1531,7 +1585,9 @@ def find_last_successful_run(test_name, current_session_id, current_build_id=Non
                         "date": created_at,
                         "public_url": public_url
                     }, passed_count, matching_project_count
+
             return None, passed_count, matching_project_count
+
         except requests.RequestException as req_err:
             print(f"Error fetching sessions for build {search_build_id}: {req_err}")
             return None, 0, 0
@@ -1540,19 +1596,22 @@ def find_last_successful_run(test_name, current_session_id, current_build_id=Non
         total_passed_sessions = 0
         total_matching_project = 0
 
+        # FIRST: Search in the SAME build if build_id is provided
         if current_build_id:
             print(f"  First checking current build: {current_build_id}")
             result, passed, matching = search_build_sessions(current_build_id, "Current Build")
             total_passed_sessions += passed
             total_matching_project += matching
-            if result:
+            if result is not None:
                 print(f"  MATCH FOUND in same build: {result['session_name']}")
+                print(f"    Session: {result['session_id']}")
                 return result
             else:
                 print(f"    No match in current build ({passed} passed, "
                       f"{matching} with {project_name} project)")
 
-        builds_url = "https://api.browserstack.com/automate/builds.json?limit=20"
+        # SECOND: Search in other recent builds
+        builds_url = "https://api.browserstack.com/automate/builds.json?limit=100"
         r = requests.get(builds_url, auth=auth, timeout=60)
         if r.status_code != 200:
             print(f"Failed to fetch builds: {r.status_code}")
@@ -1560,29 +1619,41 @@ def find_last_successful_run(test_name, current_session_id, current_build_id=Non
 
         builds = r.json()
         print(f"  Checking {len(builds)} recent builds...")
+
         builds_with_project = []
 
-        for build_data in builds:
+        for build_idx, build_data in enumerate(builds):
             build = build_data.get("automation_build", {})
             build_hashed_id = build.get("hashed_id", "")
             build_name = build.get("name", "Unknown Build")
+
+            # Skip if this is the same build we already searched
             if build_hashed_id == current_build_id:
                 continue
+
             result, passed, matching = search_build_sessions(build_hashed_id, build_name)
             total_passed_sessions += passed
             total_matching_project += matching
-            if result:
-                print(f"  MATCH FOUND: {result['session_name']} in build: {build_name}")
+
+            if result is not None:
+                print(f"  MATCH FOUND: {result['session_name']}")
+                print(f"    Build: {build_name} ({build_hashed_id})")
+                print(f"    Session: {result['session_id']}")
                 return result
+
+            # Track builds that have matching project tests
             if matching > 0:
                 builds_with_project.append(f"{build_name} ({matching} tests)")
 
         print(f"  Summary: {total_passed_sessions} passed sessions, "
               f"{total_matching_project} with {project_name} project")
+
+        # Print builds that had matching project tests
         if builds_with_project:
             print(f"  Builds with {project_name} project:")
             for b in builds_with_project[:10]:
                 print(f"    - {b}")
+
         print("No previous successful run found with same test name and project")
         return None
 
@@ -1993,8 +2064,8 @@ def parse_steps(logs):
 
     # Post-process: remove failed steps in the middle (keep only last failed step)
     # and deduplicate more aggressively
-    cleaned_steps = []
-    prev_step = None
+    cleaned_steps: list = []
+    prev_step: dict | None = None
     seen_actions = set()  # Track unique action+element combinations
 
     # First pass: check if there's a mailinator URL anywhere in the steps
@@ -2042,7 +2113,7 @@ def parse_steps(logs):
             continue
 
         # Skip duplicate consecutive steps (looser check)
-        if prev_step:
+        if prev_step is not None and isinstance(prev_step, dict):
             if step["action"] == prev_step["action"] and step["element"] == prev_step["element"]:
                 # Same action and element - skip unless value is significantly different
                 prev_val = prev_step.get("value") or ""
@@ -2173,7 +2244,7 @@ def get_all_hashed_build_ids(build_name_or_hash):
     available_builds = []
     for b in all_builds[:10]:
         build_info = b.get("automation_build", {})
-        available_builds.append(f"{build_info.get('name', 'Unknown')} ({build_info.get('hashed_id', 'N/A')[:20]}...)")
+        available_builds.append(f"{build_info.get('name', 'Unknown')} ({(build_info.get('hashed_id') or 'N/A')[:20]}...)")
 
     raise ValueError(
         f"Build '{build_name_or_hash}' not found in BrowserStack builds list.\n"
@@ -2444,6 +2515,7 @@ def extract_error_details(session):
 @app.route("/", methods=["GET", "POST"])
 def index():
     generated_file = None
+    github_url = None
     error_msg = None
     cleanup_result = None
 
@@ -2470,7 +2542,6 @@ def index():
                     logs = fetch_logs(session_id, auth_token)
 
                     # Get video URL - used directly in template, no download needed
-                    video_base64 = None
                     video_url = session.get("video_url", "")
 
                     # Parse steps (no screenshots needed)
@@ -2581,12 +2652,10 @@ def index():
                     # Sanitize test name for filename (remove invalid characters)
                     safe_test_name = re.sub(r'[<>:"/\\|?*\[\]]', '_', test_name)
                     safe_test_name = safe_test_name.strip()[:100]  # Limit length
-                    file_name = f"{safe_test_name}.html"
-                    # Use /tmp for serverless environments (Vercel/Render read-only fs)
-                    tmp_path = os.path.join('/tmp', file_name)
-                    with open(tmp_path, "w", encoding="utf-8") as f:
-                        f.write(html_content)
+                    timestamp = time.strftime("%Y%m%d-%H%M%S")
+                    file_name = f"{safe_test_name}_{timestamp}.html"
 
+                    github_url = upload_html_to_github(file_name, html_content)
                     generated_file = file_name
                 except Exception as e:
                     error_msg = f"Error processing session: {str(e)}"
@@ -2897,12 +2966,15 @@ def index():
         {f'''
         <div class="result-box result-success">
             <div class="result-title">✅ Report Generated Successfully!</div>
-            <a href="/download/{generated_file}" class="result-link">
-                <span>📥</span> Download Page
+            <a href="{github_url}" target="_blank" class="result-link">
+                <span>🔗</span> View Report
             </a>
+            <button type="button" class="result-link" onclick="copyReportLink(this, '{github_url}')">
+                <span>📋</span> Copy link
+            </button>
             <p class="result-file">File: {generated_file}</p>
         </div>
-        ''' if generated_file else ''}
+        ''' if github_url else ''}
 
         {f'''
         <div class="result-box result-error">
@@ -2915,8 +2987,8 @@ def index():
         <div class="result-box result-success">
             <div class="result-title">✅ Cleanup Completed!</div>
             <p class="cleanup-result">
-                Deleted <strong>{cleanup_result["deleted_count"]}</strong> of <strong>{cleanup_result["total_failed"]}</strong> failed sessions
-                {f'<br><span style="color: #ea4335;">⚠️ {cleanup_result["failed_deletes"]} sessions failed to delete after retries</span>' if cleanup_result.get("failed_deletes", 0) > 0 else ''}
+                Deleted <strong>{(cleanup_result or {}).get("deleted_count", 0)}</strong> of <strong>{(cleanup_result or {}).get("total_failed", 0)}</strong> failed sessions
+                {f'<br><span style="color: #ea4335;">⚠️ {int((cleanup_result or {}).get("failed_deletes", 0))} sessions failed to delete after retries</span>' if int((cleanup_result or {}).get("failed_deletes", 0)) > 0 else ''}
             </p>
         </div>
         ''' if cleanup_result else ''}
@@ -2967,28 +3039,20 @@ def index():
                 document.getElementById('cleanupBtn').textContent = '🗑️ Deleting...';
                 document.getElementById('cleanupLoadingIndicator').classList.add('active');
             }}
+
+            function copyReportLink(button, url) {{
+                navigator.clipboard.writeText(url).then(function() {{
+                    var original = button.innerHTML;
+                    button.innerHTML = '<span>✅</span> Copied!';
+                    setTimeout(function() {{
+                        button.innerHTML = original;
+                    }}, 2000);
+                }});
+            }}
         </script>
     </body>
     </html>
     """
-
-
-@app.route("/download/<filename>")
-def download(filename):
-    tmp_path = os.path.join('/tmp', filename)
-    response = send_file(tmp_path, as_attachment=True)
-
-    # Schedule cleanup of the file after sending
-    @response.call_on_close
-    def cleanup():
-        try:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-                print(f"Cleaned up file: {tmp_path}")
-        except Exception as e:
-            print(f"Failed to cleanup file {filename}: {e}")
-
-    return response
 
 
 def cleanup_temp_files():
