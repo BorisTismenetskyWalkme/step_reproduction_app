@@ -9,7 +9,7 @@ from flask import Flask, request, render_template_string
 app = Flask(__name__)
 
 # App version
-APP_VERSION = "3.4"
+APP_VERSION = "3.5"
 
 # Fill your credentials manually here or prompt internally
 BS_USERNAME = os.environ.get("AUTOMATION_BS_USER", "")
