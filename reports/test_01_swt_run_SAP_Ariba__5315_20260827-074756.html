@@ -1,0 +1,1013 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Test Reproduction - test_01_swt_run[SAP_Ariba]_5315</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { 
+    height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+    background: #1a202c;
+    color: #e2e8f0;
+}
+
+/* Main layout */
+.app-container {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+/* Header */
+.header {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+}
+.header-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    min-width: 150px;
+}
+.header-center {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex: 1;
+    justify-content: center;
+}
+.header h1 {
+    font-size: 18px;
+    font-weight: 600;
+    color: white;
+}
+.header .app-name {
+    font-size: 16px;
+    font-weight: 600;
+    color: white;
+}
+.header .test-name-label {
+    font-size: 14px;
+    color: rgba(255,255,255,0.85);
+}
+.header .test-name {
+    font-size: 14px;
+    color: rgba(255,255,255,0.85);
+    background: rgba(255,255,255,0.15);
+    padding: 6px 12px;
+    border-radius: 6px;
+    max-width: 500px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 13px;
+    color: rgba(255,255,255,0.9);
+}
+.status-badge {
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+}
+.status-passed { background: #38a169; color: white; }
+.status-failed { background: #e53e3e; color: white; }
+.status-unknown { background: #d69e2e; color: white; }
+
+/* Main content - two panels */
+.main-content {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+}
+
+/* Left panel - Video */
+.video-panel {
+    width: 55%;
+    background: #2d3748;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid #4a5568;
+}
+.video-header {
+    padding: 12px 16px;
+    background: #2d3748;
+    border-bottom: 1px solid #4a5568;
+    font-size: 14px;
+    font-weight: 600;
+    color: #a0aec0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.video-container {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: #1a202c;
+    position: relative;
+}
+.video-container video {
+    width: 100%;
+    max-height: 100%;
+    border-radius: 8px;
+    background: #000;
+}
+.speed-controls {
+    position: absolute;
+    bottom: 24px;
+    right: 24px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(0, 0, 0, 0.7);
+    padding: 6px 10px;
+    border-radius: 6px;
+    z-index: 10;
+}
+.speed-controls span {
+    font-size: 11px;
+    color: #a0aec0;
+    margin-right: 4px;
+}
+.speed-btn {
+    padding: 4px 10px;
+    border: 1px solid #4a5568;
+    background: #2d3748;
+    color: #a0aec0;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.speed-btn:hover {
+    background: #4a5568;
+    color: #e2e8f0;
+}
+.speed-btn.active {
+    background: #667eea;
+    border-color: #667eea;
+    color: white;
+}
+}
+.video-fallback {
+    text-align: center;
+    color: #a0aec0;
+}
+.video-fallback a {
+    display: inline-block;
+    background: #667eea;
+    color: white;
+    padding: 12px 24px;
+    border-radius: 8px;
+    text-decoration: none;
+    font-weight: 500;
+    margin-top: 12px;
+}
+
+/* Right panel - Steps */
+.steps-panel {
+    width: 45%;
+    display: flex;
+    flex-direction: column;
+    background: #2d3748;
+    position: relative;
+}
+.steps-header {
+    padding: 12px 16px;
+    background: #2d3748;
+    border-bottom: 1px solid #4a5568;
+    font-size: 14px;
+    font-weight: 600;
+    color: #a0aec0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.steps-count {
+    background: #667eea;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 12px;
+}
+.steps-container {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+}
+
+/* Steps list */
+.steps-list {
+    list-style: none;
+    counter-reset: step-counter;
+}
+.step-item {
+    display: flex;
+    align-items: flex-start;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    background: #3d4a5c;
+    border-radius: 8px;
+    transition: all 0.2s ease;
+    counter-increment: step-counter;
+    border-left: 3px solid transparent;
+}
+.step-item:hover {
+    background: #4a5a6e;
+    border-left-color: #667eea;
+}
+.step-item::before {
+    content: counter(step-counter);
+    min-width: 28px;
+    height: 28px;
+    background: #667eea;
+    color: white;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 600;
+    margin-right: 12px;
+    flex-shrink: 0;
+}
+.step-item.step-failed {
+    background: rgba(229, 62, 62, 0.2);
+    border-left-color: #e53e3e;
+}
+.step-item.step-failed::before {
+    background: #e53e3e;
+}
+.step-content {
+    flex: 1;
+    min-width: 0;
+}
+.step-action {
+    font-weight: 600;
+    color: #e2e8f0;
+    display: inline-block;
+    padding: 4px 10px;
+    background: #4a5568;
+    border-radius: 4px;
+    font-size: 13px;
+    margin-right: 8px;
+    margin-bottom: 4px;
+}
+.step-target {
+    color: #a0aec0;
+    font-size: 13px;
+    word-break: break-word;
+    line-height: 1.5;
+}
+.step-target a {
+    color: #63b3ed;
+    text-decoration: none;
+}
+.step-target a:hover {
+    text-decoration: underline;
+}
+.step-value {
+    color: #68d391;
+    font-weight: 500;
+}
+.step-element {
+    color: #a0aec0;
+    font-style: italic;
+    font-size: 12px;
+}
+.step-code-container {
+    position: relative;
+    margin-top: 8px;
+}
+.step-code {
+    display: block;
+    padding: 10px;
+    padding-right: 70px;
+    background: #1a202c;
+    color: #68d391;
+    border-radius: 6px;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 11px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 150px;
+    overflow-y: auto;
+}
+.copy-btn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    padding: 4px 10px;
+    background: #4a5568;
+    color: #e2e8f0;
+    border: none;
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.copy-btn:hover {
+    background: #667eea;
+}
+.copy-btn.copied {
+    background: #38a169;
+}
+.step-failed-badge {
+    display: inline-block;
+    background: #e53e3e;
+    color: white;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    margin-left: 6px;
+}
+.no-steps {
+    color: #a0aec0;
+    font-style: italic;
+    text-align: center;
+    padding: 40px 20px;
+}
+
+/* Error section - Top level banner */
+.error-banner {
+    background: linear-gradient(135deg, rgba(229, 62, 62, 0.2) 0%, rgba(197, 48, 48, 0.2) 100%);
+    border-bottom: 2px solid #e53e3e;
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-shrink: 0;
+}
+.error-banner .error-icon {
+    font-size: 20px;
+}
+.error-banner .error-content {
+    flex: 1;
+}
+.error-banner h3 {
+    color: #fc8181;
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+.error-banner p {
+    color: #feb2b2;
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+/* Bottom panel - Logs */
+.logs-panel {
+    background: #2d3748;
+    border-top: 1px solid #4a5568;
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+.logs-section {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.logs-title {
+    font-size: 13px;
+    color: #a0aec0;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.logs-links {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+.log-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    border-radius: 6px;
+    text-decoration: none;
+    font-size: 12px;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+.log-link:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+.log-link.network { background: #667eea; color: white; }
+.log-link.console { background: #48bb78; color: white; }
+.log-link.selenium { background: #ed8936; color: white; }
+.log-link.bs-link { background: #f56565; color: white; }
+.log-link.success-link { background: #38a169; color: white; }
+.log-link.eux-bo { background: #9f7aea; color: white; }
+.log-link.like {
+    background: linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%);
+    color: white;
+    font-weight: 700;
+    animation: pulse-like 2s infinite;
+    box-shadow: 0 2px 10px rgba(236, 72, 153, 0.4);
+}
+.log-link.like:hover {
+    background: linear-gradient(135deg, #f472b6 0%, #a78bfa 100%);
+    transform: translateY(-2px) scale(1.05);
+    box-shadow: 0 6px 20px rgba(236, 72, 153, 0.5);
+}
+@keyframes pulse-like {
+    0%, 100% { box-shadow: 0 2px 10px rgba(236, 72, 153, 0.4); }
+    50% { box-shadow: 0 4px 20px rgba(236, 72, 153, 0.7); }
+}
+
+/* Network Logs Modal */
+.modal-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.8);
+    z-index: 1000;
+    justify-content: center;
+    align-items: center;
+}
+.modal-overlay.active {
+    display: flex;
+}
+.modal-content {
+    background: #2d3748;
+    border-radius: 12px;
+    width: 90%;
+    max-width: 1200px;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 25px 50px rgba(0, 0, 0, 0.5);
+    border: 1px solid #4a5568;
+}
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid #4a5568;
+    background: #1a202c;
+    border-radius: 12px 12px 0 0;
+}
+.modal-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: #e2e8f0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.modal-close {
+    background: #e53e3e;
+    border: none;
+    color: white;
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+.modal-close:hover {
+    background: #c53030;
+    transform: scale(1.1);
+}
+.modal-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+}
+.network-request {
+    background: #1a202c;
+    border-radius: 8px;
+    margin-bottom: 12px;
+    border: 1px solid #4a5568;
+    overflow: hidden;
+}
+.network-request-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: #2d3748;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+.network-request-header:hover {
+    background: #3d4a5c;
+}
+.network-method {
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    min-width: 50px;
+    text-align: center;
+}
+.network-method.GET { background: #48bb78; color: white; }
+.network-method.POST { background: #667eea; color: white; }
+.network-method.PUT { background: #ed8936; color: white; }
+.network-method.DELETE { background: #e53e3e; color: white; }
+.network-method.OPTIONS { background: #9f7aea; color: white; }
+.network-method.PATCH { background: #38b2ac; color: white; }
+.network-status {
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+}
+.network-status.success { background: #38a169; color: white; }
+.network-status.redirect { background: #d69e2e; color: white; }
+.network-status.client-error { background: #e53e3e; color: white; }
+.network-status.server-error { background: #c53030; color: white; }
+.network-status.pending { background: #718096; color: white; }
+.network-url {
+    flex: 1;
+    font-size: 12px;
+    color: #63b3ed;
+    word-break: break-all;
+    line-height: 1.4;
+}
+.network-time {
+    font-size: 11px;
+    color: #a0aec0;
+    white-space: nowrap;
+}
+.network-expand-icon {
+    color: #a0aec0;
+    transition: transform 0.2s;
+}
+.network-request.expanded .network-expand-icon {
+    transform: rotate(180deg);
+}
+.network-request-details {
+    display: none;
+    padding: 16px;
+    border-top: 1px solid #4a5568;
+}
+.network-request.expanded .network-request-details {
+    display: block;
+}
+.network-section {
+    margin-bottom: 16px;
+}
+.network-section:last-child {
+    margin-bottom: 0;
+}
+.network-section-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #a0aec0;
+    margin-bottom: 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #4a5568;
+}
+.network-headers {
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 11px;
+    line-height: 1.6;
+}
+.network-header-item {
+    display: flex;
+    margin-bottom: 4px;
+}
+.network-header-name {
+    color: #68d391;
+    min-width: 200px;
+    flex-shrink: 0;
+}
+.network-header-value {
+    color: #e2e8f0;
+    word-break: break-all;
+}
+.network-body-content {
+    background: #1a202c;
+    padding: 12px;
+    border-radius: 6px;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 11px;
+    color: #e2e8f0;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 300px;
+    overflow-y: auto;
+    line-height: 1.5;
+}
+.no-network-logs {
+    text-align: center;
+    color: #a0aec0;
+    padding: 40px 20px;
+    font-style: italic;
+}
+.network-count-badge {
+    background: #667eea;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 12px;
+    margin-left: 8px;
+}
+
+/* Last successful run info */
+.success-run-info {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 8px 16px;
+    background: rgba(56, 161, 105, 0.15);
+    border: 1px solid #38a169;
+    border-radius: 8px;
+    font-size: 12px;
+}
+.success-run-info .label {
+    color: #68d391;
+    font-weight: 600;
+}
+.success-run-info .details {
+    color: #a0aec0;
+}
+.success-run-info .date {
+    color: #718096;
+    font-size: 11px;
+}
+
+/* Scrollbar styling - Enhanced visibility */
+.steps-container {
+    scrollbar-width: auto;
+    scrollbar-color: #667eea #1a202c;
+}
+.steps-container::-webkit-scrollbar {
+    width: 14px;
+}
+.steps-container::-webkit-scrollbar-track {
+    background: #1a202c;
+    border-left: 1px solid #4a5568;
+}
+.steps-container::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
+    border-radius: 7px;
+    border: 2px solid #1a202c;
+    min-height: 50px;
+}
+.steps-container::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, #7c8ff8 0%, #8b5cb8 100%);
+}
+
+/* Scroll indicator hint */
+.steps-panel::after {
+    content: '↓ Scroll for more steps';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 14px;
+    padding: 8px 16px;
+    background: linear-gradient(transparent, #2d3748 50%);
+    color: #a0aec0;
+    font-size: 12px;
+    text-align: center;
+    pointer-events: none;
+    opacity: 0.9;
+    transition: opacity 0.3s ease;
+}
+.steps-panel.scrolled-bottom::after {
+    opacity: 0;
+}
+
+/* Responsive */
+@media (max-width: 1024px) {
+    .main-content {
+        flex-direction: column;
+    }
+    .video-panel, .steps-panel {
+        width: 100%;
+        height: 50%;
+    }
+    .video-panel {
+        border-right: none;
+        border-bottom: 1px solid #4a5568;
+    }
+}
+</style>
+</head>
+<body>
+<div class="app-container">
+    <!-- Header -->
+    <div class="header">
+        <div class="header-left">
+            <span class="app-name">🎬 BS TestReplay</span>
+        </div>
+        <div class="header-center">
+            <span class="test-name-label">Test name:</span>
+            <span class="test-name" title="test_01_swt_run[SAP_Ariba]_5315">test_01_swt_run[SAP_Ariba]_5315</span>
+            
+            <span class="test-name-label" style="margin-left: 16px;">Player lib version:</span>
+            <span class="test-name" title="20260826-171013-9af5c5fe">20260826-171013-9af5c5fe</span>
+            
+        </div>
+        <div class="header-right">
+            <span>chrome 151.0 | Windows 11</span>
+            <span>⏱️ 76s</span>
+            <span class="status-badge status-failed">failed</span>
+        </div>
+    </div>
+
+    <!-- Error Banner - Only visible when test status is failed -->
+    
+    <div class="error-banner">
+        <span class="error-icon">❌</span>
+        <div class="error-content">
+            <h3>Failure Details</h3>
+            <p>failed to login to ariba: b&#39;Message: \n</p>
+        </div>
+    </div>
+    
+
+    <!-- Main content -->
+    <div class="main-content">
+        <!-- Left panel - Video -->
+        <div class="video-panel">
+            <div class="video-header">
+                🎬 Execution Video
+            </div>
+            <div class="video-container">
+                
+                <video id="testVideo" controls>
+                    <source src="https://automate.browserstack.com/sessions/cf0ef13a3cc2288f8d05cfd9cefd79589ef24e2c/video?token=VThIZytsZi84anBmNUpyUUpTT3ZmbHdoVWtVU25HY1ZlekNWZExDdEIyQjhJOXZOYlluQ3ZrS2UwUFFKSk5IU01kdXV3Vmk2clVsT3dsV1FHNE5YSHc9PS0tZFBNanEzSFRLV3JNa05ZZ3RpdFZzQT09--fc5963f9f27d691f8778f33629cde91d275a5863&amp;source=rest_api&amp;diff=2314.679843683" type="video/mp4">
+                    Your browser does not support the video tag.
+                </video>
+                <div class="speed-controls">
+                    <span>Speed:</span>
+                    <button class="speed-btn active" onclick="setSpeed(1)">1x</button>
+                    <button class="speed-btn" onclick="setSpeed(2)">2x</button>
+                    <button class="speed-btn" onclick="setSpeed(4)">4x</button>
+                </div>
+                
+            </div>
+        </div>
+
+        <!-- Right panel - Steps -->
+        <div class="steps-panel" id="stepsPanel">
+            <div class="steps-header">
+                <span>📝 Steps to Reproduce</span>
+                <span class="steps-count">5 steps</span>
+            </div>
+            <div class="steps-container" id="stepsContainer">
+                
+                <ul class="steps-list">
+                
+                    <li class="step-item ">
+                        <div class="step-content">
+                            <span class="step-action">Open</span>
+                            <span class="step-target">
+                                <a href="https://s1.ariba.com/gb/?realm=eMarketplaceEMEA-T" target="_blank">https://s1.ariba.com/gb/?realm=eMarketplaceEMEA-T</a>
+                                
+                                
+                            </span>
+                
+                            
+                        </div>
+                    </li>
+                
+                    <li class="step-item ">
+                        <div class="step-content">
+                            <span class="step-action">Enter text</span>
+                            <span class="step-target">
+                                
+                                <span class="step-value">"Requester14"</span>
+                                <span class="step-element">in &#34;id=&#34;UserName&#34;</span>
+                            </span>
+                
+                            
+                        </div>
+                    </li>
+                
+                    <li class="step-item ">
+                        <div class="step-content">
+                            <span class="step-action">Enter text</span>
+                            <span class="step-target">
+                                
+                                <span class="step-value">"go2Ariba!"</span>
+                                <span class="step-element">in &#34;id=&#34;Password&#34;</span>
+                            </span>
+                
+                            
+                        </div>
+                    </li>
+                
+                    <li class="step-item ">
+                        <div class="step-content">
+                            <span class="step-action">Click</span>
+                            <span class="step-target">
+                                
+                                
+                                <span class="step-element">&#34;.w-login-form-btn&#34;</span>
+                            </span>
+                
+                            
+                        </div>
+                    </li>
+                
+                    <li class="step-item ">
+                        <div class="step-content">
+                            <span class="step-action">Enter text</span>
+                            <span class="step-target">
+                                
+                                
+                                <span class="step-element">in &#34;id=&#34;recom&#34;</span>
+                            </span>
+                
+                            
+                        </div>
+                    </li>
+                
+                </ul>
+                
+            </div>
+        </div>
+    </div>
+
+    <!-- Bottom panel - Logs & Links -->
+    <div class="logs-panel">
+        <div class="logs-section">
+            <div class="logs-title">
+                📋 Logs & Links
+            </div>
+            <div class="logs-links">
+                
+                <a href="https://automate.browserstack.com/builds/2794f669740b93bdd5442eb9d9005bf1c20ac105/sessions/cf0ef13a3cc2288f8d05cfd9cefd79589ef24e2c?auth_token=272e1d5dc7dd21c64451a62ff82cf188b1b5fa360ed6a953f69d1227a0b8b287" target="_blank" class="log-link bs-link">
+                    🔗 Open in BrowserStack
+                </a>
+                
+                
+                
+                
+                <a href="https://bs-selenium-logs-euw.s3.eu-west-1.amazonaws.com/cf0ef13a3cc2288f8d05cfd9cefd79589ef24e2c/cf0ef13a3cc2288f8d05cfd9cefd79589ef24e2c-console-logs-v2.txt?X-Amz-Algorithm=AWS4-HMAC-SHA256&amp;X-Amz-Credential=AKIA2XUQHUQMEX46HTMV%2F20260827%2Feu-west-1%2Fs3%2Faws4_request&amp;X-Amz-Date=20260827T074752Z&amp;X-Amz-Expires=604800&amp;X-Amz-SignedHeaders=host&amp;X-Amz-Signature=e6481a45e679a92785a1611040b0a252eeb941602d9bd29265b3e8108a329044" target="_blank" class="log-link console">
+                    💻 Console
+                </a>
+                
+                <a href="https://walkme.workproud.com/post/view/16bd0e0c-1aca-4519-a930-ce7e95ee7012/" target="_blank" class="log-link like">
+                    🤍 Send me WorkProud
+                </a>
+            </div>
+        </div>
+
+        
+    </div>
+</div>
+
+<!-- Network Logs Modal -->
+<div id="networkLogsModal" class="modal-overlay">
+    <div class="modal-content">
+        <div class="modal-header">
+            <span class="modal-title">🌐 WalkMe Network Requests
+                <span class="network-count-badge">0</span>
+            </span>
+            <button class="modal-close" onclick="closeNetworkLogsModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            
+            <div class="no-network-logs">
+                <p>No WalkMe-related network requests found in this session.</p>
+            </div>
+            
+        </div>
+    </div>
+</div>
+
+<script>
+function setSpeed(speed) {
+    var video = document.getElementById('testVideo');
+    if (video) {
+        video.playbackRate = speed;
+        // Update button states
+        var buttons = document.querySelectorAll('.speed-btn');
+        buttons.forEach(function(btn) {
+            btn.classList.remove('active');
+            if (btn.textContent === speed + 'x') {
+                btn.classList.add('active');
+            }
+        });
+    }
+}
+
+function copyCode(button) {
+    var codeBlock = button.nextElementSibling;
+    var code = codeBlock.textContent;
+
+    navigator.clipboard.writeText(code).then(function() {
+        // Success - update button
+        button.innerHTML = '✅ Copied!';
+        button.classList.add('copied');
+
+        // Reset after 2 seconds
+        setTimeout(function() {
+            button.innerHTML = '📋 Copy';
+            button.classList.remove('copied');
+        }, 2000);
+    }).catch(function(err) {
+        // Fallback for older browsers
+        var textarea = document.createElement('textarea');
+        textarea.value = code;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        
+        button.innerHTML = '✅ Copied!';
+        button.classList.add('copied');
+        setTimeout(function() {
+            button.innerHTML = '📋 Copy';
+            button.classList.remove('copied');
+        }, 2000);
+    });
+}
+
+// Network Logs Modal Functions
+function openNetworkLogsModal() {
+    document.getElementById('networkLogsModal').classList.add('active');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeNetworkLogsModal() {
+    document.getElementById('networkLogsModal').classList.remove('active');
+    document.body.style.overflow = '';
+}
+
+function toggleNetworkRequest(index) {
+    var request = document.getElementById('network-request-' + index);
+    if (request) {
+        request.classList.toggle('expanded');
+    }
+}
+
+// Close modal on Escape key
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        closeNetworkLogsModal();
+    }
+});
+
+// Close modal when clicking outside
+document.getElementById('networkLogsModal').addEventListener('click', function(e) {
+    if (e.target === this) {
+        closeNetworkLogsModal();
+    }
+});
+
+// Handle scroll indicator visibility
+document.addEventListener('DOMContentLoaded', function() {
+    var stepsContainer = document.getElementById('stepsContainer');
+    var stepsPanel = document.getElementById('stepsPanel');
+
+    if (stepsContainer && stepsPanel) {
+        function checkScroll() {
+            var isAtBottom = stepsContainer.scrollHeight - stepsContainer.scrollTop <= stepsContainer.clientHeight + 10;
+            if (isAtBottom) {
+                stepsPanel.classList.add('scrolled-bottom');
+            } else {
+                stepsPanel.classList.remove('scrolled-bottom');
+            }
+        }
+
+        stepsContainer.addEventListener('scroll', checkScroll);
+        // Initial check
+        checkScroll();
+    }
+});
+</script>
+</body>
+</html>
