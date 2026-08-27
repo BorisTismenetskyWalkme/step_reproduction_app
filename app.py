@@ -1385,6 +1385,30 @@ def upload_html_to_github(file_name, html_content):
     return f"https://{owner}.github.io/{repo}/{path}"
 
 
+def wait_for_github_pages(url, timeout=90, interval=3):
+    """Poll a GitHub Pages URL until it responds successfully.
+
+    GitHub Pages takes some time to publish a file after it's pushed, so a
+    freshly uploaded report can 404 for a short window even though the
+    commit itself succeeded. Raises RuntimeError if it never comes up
+    within the timeout, so the caller doesn't hand out a dead link.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            response = requests.head(url, timeout=10, allow_redirects=True)
+            if response.status_code == 200:
+                return
+        except requests.RequestException:
+            pass
+        time.sleep(interval)
+
+    raise RuntimeError(
+        f"Report was uploaded but isn't live on GitHub Pages yet after {timeout}s. "
+        f"It should appear shortly at {url}"
+    )
+
+
 def fetch_video(video_url):
     """Download video and return base64 encoded string for embedding"""
     auth = (BS_USERNAME, BS_ACCESS_KEY) if BS_USERNAME and BS_ACCESS_KEY else None
@@ -2655,7 +2679,9 @@ def index():
                     timestamp = time.strftime("%Y%m%d-%H%M%S")
                     file_name = f"{safe_test_name}_{timestamp}.html"
 
-                    github_url = upload_html_to_github(file_name, html_content)
+                    uploaded_url = upload_html_to_github(file_name, html_content)
+                    wait_for_github_pages(uploaded_url)
+                    github_url = uploaded_url
                     generated_file = file_name
                 except Exception as e:
                     error_msg = f"Error processing session: {str(e)}"
