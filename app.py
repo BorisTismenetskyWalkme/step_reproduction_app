@@ -9,7 +9,7 @@ from flask import Flask, request, render_template_string
 app = Flask(__name__)
 
 # App version
-APP_VERSION = "3.5"
+APP_VERSION = "3.4"
 
 # Fill your credentials manually here or prompt internally
 BS_USERNAME = os.environ.get("AUTOMATION_BS_USER", "")
@@ -19,6 +19,8 @@ BS_ACCESS_KEY = os.environ.get("AUTOMATION_BS_PASS", "")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO = os.environ.get("GITHUB_REPORTS_REPO", "BorisTismenetskyWalkme/step_reproduction_app")
 GITHUB_BRANCH = os.environ.get("GITHUB_REPORTS_BRANCH", "main")
+# Session videos are copied into the repo; GitHub rejects files over 100 MB
+MAX_VIDEO_BYTES = int(os.environ.get("MAX_VIDEO_BYTES", 90 * 1024 * 1024))
 
 # Detect serverless environments (Vercel/Render) - disable heavy memory operations
 IS_SERVERLESS = bool(os.environ.get('VERCEL') or os.environ.get('RENDER'))
@@ -862,9 +864,9 @@ html, body {
                 🎬 Execution Video
             </div>
             <div class="video-container">
-                {% if video_url %}
+                {% if video_src %}
                 <video id="testVideo" controls>
-                    <source src="{{ video_url }}" type="video/mp4">
+                    <source src="{{ video_src }}" type="video/mp4">
                     Your browser does not support the video tag.
                 </video>
                 <div class="speed-controls">
@@ -873,10 +875,15 @@ html, body {
                     <button class="speed-btn" onclick="setSpeed(2)">2x</button>
                     <button class="speed-btn" onclick="setSpeed(4)">4x</button>
                 </div>
+                {% if not video_archived %}
+                <div class="video-fallback">
+                    <p>Video is streamed from BrowserStack and stops playing once the session is deleted.</p>
+                </div>
+                {% endif %}
                 {% else %}
                 <div class="video-fallback">
-                    <p>Video not embedded in this file.</p>
-                    <a href="{{ video_url }}" target="_blank">▶ Open Video in BrowserStack</a>
+                    <p>No video recorded for this session.</p>
+                    <a href="{{ bs_session_url }}" target="_blank">▶ Open Session in BrowserStack</a>
                 </div>
                 {% endif %}
             </div>
@@ -1357,8 +1364,8 @@ def fetch_walkme_network_logs(session_id: str, auth_token: str | None = None):
     return walkme_requests
 
 
-def upload_html_to_github(file_name, html_content):
-    """Upload a generated report to GitHub so it can be viewed via GitHub Pages.
+def upload_file_to_github(path, content_bytes, message, timeout=30):
+    """Commit a file to the reports repo so it is served by GitHub Pages.
 
     Returns the public GitHub Pages URL for the uploaded file.
     """
@@ -1366,23 +1373,59 @@ def upload_html_to_github(file_name, html_content):
         raise RuntimeError("GITHUB_TOKEN environment variable is not set.")
 
     owner, repo = GITHUB_REPO.split("/", 1)
-    path = f"reports/{file_name}"
     api_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github+json",
     }
     payload = {
-        "message": f"Add reproduction report: {file_name}",
-        "content": base64.b64encode(html_content.encode("utf-8")).decode("utf-8"),
+        "message": message,
+        "content": base64.b64encode(content_bytes).decode("utf-8"),
         "branch": GITHUB_BRANCH,
     }
 
-    response = requests.put(api_url, headers=headers, json=payload, timeout=30)
+    response = requests.put(api_url, headers=headers, json=payload, timeout=timeout)
     if response.status_code not in (200, 201):
         raise RuntimeError(f"GitHub upload failed ({response.status_code}): {response.text}")
 
     return f"https://{owner}.github.io/{repo}/{path}"
+
+
+def upload_html_to_github(file_name, html_content):
+    """Upload a generated report to GitHub so it can be viewed via GitHub Pages.
+
+    Returns the public GitHub Pages URL for the uploaded file.
+    """
+    return upload_file_to_github(
+        f"reports/{file_name}",
+        html_content.encode("utf-8"),
+        f"Add reproduction report: {file_name}",
+    )
+
+
+def archive_video_to_github(video_url, file_stem):
+    """Copy the session video next to the report so it outlives the BS session.
+
+    Returns the video path relative to the report page, or None if the video
+    could not be downloaded or uploaded (the caller then falls back to the
+    BrowserStack URL).
+    """
+    video_bytes = fetch_video(video_url)
+    if not video_bytes:
+        return None
+
+    relative_path = f"videos/{file_stem}.mp4"
+    try:
+        upload_file_to_github(
+            f"reports/{relative_path}",
+            video_bytes,
+            f"Add reproduction video: {file_stem}.mp4",
+            timeout=120,
+        )
+    except Exception as e:
+        print(f"Failed to archive video: {e}")
+        return None
+    return relative_path
 
 
 def wait_for_github_pages(url, timeout=90, interval=3):
@@ -1410,16 +1453,33 @@ def wait_for_github_pages(url, timeout=90, interval=3):
 
 
 def fetch_video(video_url):
-    """Download video and return base64 encoded string for embedding"""
+    """Download the session video and return its raw bytes, or None on failure.
+
+    Videos larger than MAX_VIDEO_BYTES are rejected, since GitHub refuses
+    files over 100 MB.
+    """
+    if not video_url:
+        return None
     auth = (BS_USERNAME, BS_ACCESS_KEY) if BS_USERNAME and BS_ACCESS_KEY else None
 
     try:
         # Try direct URL first (may be publicly accessible with token in URL)
-        r = requests.get(video_url, timeout=120)
+        r = requests.get(video_url, timeout=120, stream=True)
         if r.status_code != 200 and auth:
-            r = requests.get(video_url, auth=auth, timeout=120)
+            r.close()
+            r = requests.get(video_url, auth=auth, timeout=120, stream=True)
         r.raise_for_status()
-        return base64.b64encode(r.content).decode('utf-8')
+
+        chunks = []
+        size = 0
+        for chunk in r.iter_content(chunk_size=1024 * 1024):
+            size += len(chunk)
+            if size > MAX_VIDEO_BYTES:
+                r.close()
+                print(f"Video is larger than {MAX_VIDEO_BYTES} bytes - not archiving it")
+                return None
+            chunks.append(chunk)
+        return b"".join(chunks)
     except Exception as e:
         print(f"Failed to download video: {e}")
         return None
@@ -2650,6 +2710,19 @@ def index():
                     print("Fetching WalkMe network logs...")
                     walkme_network_logs = fetch_walkme_network_logs(session_id, auth_token)
 
+                    # Sanitize test name for filename (remove invalid characters)
+                    safe_test_name = re.sub(r'[<>:"/\\|?*\[\]]', '_', test_name)
+                    safe_test_name = safe_test_name.strip()[:100]  # Limit length
+                    timestamp = time.strftime("%Y%m%d-%H%M%S")
+                    file_stem = f"{safe_test_name}_{timestamp}"
+                    file_name = f"{file_stem}.html"
+
+                    # Copy the video next to the report so it keeps playing after
+                    # the BS session is deleted; fall back to the BS URL if that fails
+                    print("Archiving session video...")
+                    archived_video_path = archive_video_to_github(video_url, file_stem)
+                    video_src = archived_video_path or video_url
+
                     html_content = render_template_string(
                         HTML_TEMPLATE,
                         test_name=test_name,
@@ -2664,6 +2737,8 @@ def index():
                         error_reason=error_reason,
                         error_message=error_message,
                         video_url=video_url,
+                        video_src=video_src,
+                        video_archived=bool(archived_video_path),
                         network_logs_url=network_logs_url,
                         console_logs_url=console_logs_url,
                         selenium_logs_url=selenium_logs_url,
@@ -2672,12 +2747,6 @@ def index():
                         eux_bo_url=eux_bo_url,
                         walkme_network_logs=walkme_network_logs
                     )
-
-                    # Sanitize test name for filename (remove invalid characters)
-                    safe_test_name = re.sub(r'[<>:"/\\|?*\[\]]', '_', test_name)
-                    safe_test_name = safe_test_name.strip()[:100]  # Limit length
-                    timestamp = time.strftime("%Y%m%d-%H%M%S")
-                    file_name = f"{safe_test_name}_{timestamp}.html"
 
                     uploaded_url = upload_html_to_github(file_name, html_content)
                     wait_for_github_pages(uploaded_url)
