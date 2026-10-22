@@ -92,6 +92,8 @@ GUID_TO_EMAIL_MAPPING = {
     "e6d9a405120d42e0904514a0ad3e912d": "qa_automation_successfacto_3ab3@walkme.com",
     "cd402ac3721e4fd3b06a357247fa22e8": "qa_automation_successfacto_d90e@walkme.com",
     "a5e4b07a4e15415e90d738c6909c6091": "qa_automation_successfacto_4ccf@walkme.com",
+    "8e710b5b7caf45aa80ef578aab8ec396": "qa_automation_o9soltuions_0c39@walkme.com",
+    "d88ec4ebec484f1fbce98435b39e0123": "qa_automation_workday_50e7@walkme.com",
     "d674d156fa1a443ba23986b309227eac": "sapautomation_successfacto_509a@walkme.com",
     "6a48f12bce5a4b1497f3d5905c5f25e8": "sapautomation_concur_756c@walkme.com",
     "93c2b84bf8d141e58566769658133ffd": "sapautomation_concur_5059@walkme.com",
