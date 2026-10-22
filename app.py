@@ -1366,68 +1366,79 @@ def fetch_walkme_network_logs(session_id: str, auth_token: str | None = None):
     return walkme_requests
 
 
-def upload_file_to_github(path, content_bytes, message, timeout=30):
-    """Commit a file to the reports repo so it is served by GitHub Pages.
+def _github_api(method, endpoint, payload=None, timeout=30):
+    """Call the GitHub REST API for the reports repo and return the parsed JSON."""
+    owner, repo = GITHUB_REPO.split("/", 1)
+    response = requests.request(
+        method,
+        f"https://api.github.com/repos/{owner}/{repo}/{endpoint}",
+        headers={
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json",
+        },
+        json=payload,
+        timeout=timeout,
+    )
+    if response.status_code not in (200, 201):
+        raise RuntimeError(
+            f"GitHub {method} {endpoint} failed ({response.status_code}): {response.text}"
+        )
+    return response.json()
 
-    Returns the public GitHub Pages URL for the uploaded file.
+
+def upload_files_to_github(files, message, attempts=3):
+    """Commit several files to the reports repo in a single commit.
+
+    One commit means one GitHub Pages run: separate commits per file start a
+    run each, and the later run has to wait for the earlier one to finish.
+    `files` maps repo paths to bytes. Returns the GitHub Pages base URL.
     """
     if not GITHUB_TOKEN:
         raise RuntimeError("GITHUB_TOKEN environment variable is not set.")
 
+    # Blobs don't depend on the branch head, so upload them once
+    tree_entries = []
+    for path, content_bytes in files.items():
+        blob = _github_api("POST", "git/blobs", {
+            "content": base64.b64encode(content_bytes).decode("utf-8"),
+            "encoding": "base64",
+        }, timeout=120)
+        tree_entries.append({"path": path, "mode": "100644", "type": "blob", "sha": blob["sha"]})
+
+    # Moving the branch fails if someone else committed meanwhile; rebuild on the new head
+    for attempt in range(attempts):
+        head_sha = _github_api("GET", f"git/ref/heads/{GITHUB_BRANCH}")["object"]["sha"]
+        base_tree = _github_api("GET", f"git/commits/{head_sha}")["tree"]["sha"]
+        tree = _github_api("POST", "git/trees", {"base_tree": base_tree, "tree": tree_entries})
+        commit = _github_api("POST", "git/commits", {
+            "message": message,
+            "tree": tree["sha"],
+            "parents": [head_sha],
+        })
+        try:
+            _github_api("PATCH", f"git/refs/heads/{GITHUB_BRANCH}", {"sha": commit["sha"]})
+            break
+        except RuntimeError:
+            if attempt == attempts - 1:
+                raise
+            print("Branch moved while committing the report - retrying on the new head")
+
     owner, repo = GITHUB_REPO.split("/", 1)
-    api_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
-    headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json",
-    }
-    payload = {
-        "message": message,
-        "content": base64.b64encode(content_bytes).decode("utf-8"),
-        "branch": GITHUB_BRANCH,
-    }
-
-    response = requests.put(api_url, headers=headers, json=payload, timeout=timeout)
-    if response.status_code not in (200, 201):
-        raise RuntimeError(f"GitHub upload failed ({response.status_code}): {response.text}")
-
-    return f"https://{owner}.github.io/{repo}/{path}"
+    return f"https://{owner}.github.io/{repo}"
 
 
-def upload_html_to_github(file_name, html_content):
-    """Upload a generated report to GitHub so it can be viewed via GitHub Pages.
+def upload_report_to_github(file_name, html_content, video_bytes=None, video_path=None):
+    """Upload a report, and its video when there is one, so GitHub Pages serves them.
 
-    Returns the public GitHub Pages URL for the uploaded file.
+    `video_path` is relative to the report page. Returns the public GitHub
+    Pages URL of the report.
     """
-    return upload_file_to_github(
-        f"reports/{file_name}",
-        html_content.encode("utf-8"),
-        f"Add reproduction report: {file_name}",
-    )
+    files = {f"reports/{file_name}": html_content.encode("utf-8")}
+    if video_bytes:
+        files[f"reports/{video_path}"] = video_bytes
 
-
-def archive_video_to_github(video_url, file_stem):
-    """Copy the session video next to the report so it outlives the BS session.
-
-    Returns the video path relative to the report page, or None if the video
-    could not be downloaded or uploaded (the caller then falls back to the
-    BrowserStack URL).
-    """
-    video_bytes = fetch_video(video_url)
-    if not video_bytes:
-        return None
-
-    relative_path = f"videos/{file_stem}.mp4"
-    try:
-        upload_file_to_github(
-            f"reports/{relative_path}",
-            video_bytes,
-            f"Add reproduction video: {file_stem}.mp4",
-            timeout=120,
-        )
-    except Exception as e:
-        print(f"Failed to archive video: {e}")
-        return None
-    return relative_path
+    base_url = upload_files_to_github(files, f"Add reproduction report: {file_name}")
+    return f"{base_url}/reports/{file_name}"
 
 
 def wait_for_github_pages(url, timeout=90, interval=3):
@@ -1435,23 +1446,22 @@ def wait_for_github_pages(url, timeout=90, interval=3):
 
     GitHub Pages takes some time to publish a file after it's pushed, so a
     freshly uploaded report can 404 for a short window even though the
-    commit itself succeeded. Raises RuntimeError if it never comes up
-    within the timeout, so the caller doesn't hand out a dead link.
+    commit itself succeeded. Returns True once it is live, or False if it
+    isn't within the timeout - the commit is in, so the link will start
+    working once GitHub finishes deploying.
     """
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
             response = requests.head(url, timeout=10, allow_redirects=True)
             if response.status_code == 200:
-                return
+                return True
         except requests.RequestException:
             pass
         time.sleep(interval)
 
-    raise RuntimeError(
-        f"Report was uploaded but isn't live on GitHub Pages yet after {timeout}s. "
-        f"It should appear shortly at {url}"
-    )
+    print(f"Report isn't live on GitHub Pages after {timeout}s: {url}")
+    return False
 
 
 def fetch_video(video_url):
@@ -2602,6 +2612,7 @@ def extract_error_details(session):
 def index():
     generated_file = None
     github_url = None
+    pages_pending = False
     error_msg = None
     cleanup_result = None
 
@@ -2720,9 +2731,10 @@ def index():
                     file_name = f"{file_stem}.html"
 
                     # Copy the video next to the report so it keeps playing after
-                    # the BS session is deleted; fall back to the BS URL if that fails
-                    print("Archiving session video...")
-                    archived_video_path = archive_video_to_github(video_url, file_stem)
+                    # the BS session is deleted; fall back to the BS URL if it can't be downloaded
+                    print("Downloading session video...")
+                    video_bytes = fetch_video(video_url)
+                    archived_video_path = f"videos/{file_stem}.mp4" if video_bytes else None
                     video_src = archived_video_path or video_url
 
                     html_content = render_template_string(
@@ -2750,8 +2762,10 @@ def index():
                         walkme_network_logs=walkme_network_logs
                     )
 
-                    uploaded_url = upload_html_to_github(file_name, html_content)
-                    wait_for_github_pages(uploaded_url)
+                    uploaded_url = upload_report_to_github(
+                        file_name, html_content, video_bytes, archived_video_path
+                    )
+                    pages_pending = not wait_for_github_pages(uploaded_url)
                     github_url = uploaded_url
                     generated_file = file_name
                 except Exception as e:
@@ -2947,6 +2961,11 @@ def index():
                 font-size: 13px;
                 margin-top: 12px;
             }}
+            .result-pending {{
+                color: #b06000;
+                font-size: 14px;
+                margin-top: 12px;
+            }}
             .error-text {{
                 color: #ea4335;
                 font-size: 14px;
@@ -3069,6 +3088,8 @@ def index():
             <button type="button" class="result-link" onclick="copyReportLink(this, '{github_url}')">
                 <span>📋</span> Copy link
             </button>
+            {'<p class="result-pending">⏳ GitHub Pages is still publishing the report. '
+             'The link will work in about a minute.</p>' if pages_pending else ''}
             <p class="result-file">File: {generated_file}</p>
         </div>
         ''' if github_url else ''}
