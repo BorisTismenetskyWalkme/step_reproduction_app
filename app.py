@@ -2,6 +2,7 @@ import base64
 import os
 import re
 import time
+from datetime import datetime, timedelta
 
 import requests
 from flask import Flask, request, render_template_string
@@ -9,7 +10,7 @@ from flask import Flask, request, render_template_string
 app = Flask(__name__)
 
 # App version
-APP_VERSION = "3.4"
+APP_VERSION = "4.0"
 
 # Fill your credentials manually here or prompt internally
 BS_USERNAME = os.environ.get("AUTOMATION_BS_USER", "")
@@ -830,7 +831,7 @@ html, body {
     <!-- Header -->
     <div class="header">
         <div class="header-left">
-            <span class="app-name">🎬 BS TestReplay</span>
+            <span class="app-name">🎬 Repro</span>
         </div>
         <div class="header-center">
             <span class="test-name-label">Test name:</span>
@@ -1391,7 +1392,8 @@ def upload_files_to_github(files, message, attempts=3):
 
     One commit means one GitHub Pages run: separate commits per file start a
     run each, and the later run has to wait for the earlier one to finish.
-    `files` maps repo paths to bytes. Returns the GitHub Pages base URL.
+    `files` maps repo paths to bytes, or to None to delete that path.
+    Returns the GitHub Pages base URL.
     """
     if not GITHUB_TOKEN:
         raise RuntimeError("GITHUB_TOKEN environment variable is not set.")
@@ -1399,6 +1401,9 @@ def upload_files_to_github(files, message, attempts=3):
     # Blobs don't depend on the branch head, so upload them once
     tree_entries = []
     for path, content_bytes in files.items():
+        if content_bytes is None:
+            tree_entries.append({"path": path, "mode": "100644", "type": "blob", "sha": None})
+            continue
         blob = _github_api("POST", "git/blobs", {
             "content": base64.b64encode(content_bytes).decode("utf-8"),
             "encoding": "base64",
@@ -1439,6 +1444,54 @@ def upload_report_to_github(file_name, html_content, video_bytes=None, video_pat
 
     base_url = upload_files_to_github(files, f"Add reproduction report: {file_name}")
     return f"{base_url}/reports/{file_name}"
+
+
+def delete_old_reports_from_github(older_than_days):
+    """Delete reports and their videos older than `older_than_days` from the reports repo.
+
+    Age comes from the timestamp in the file name (`<test>_YYYYMMDD-HHMMSS.html`
+    and `videos/<test>_YYYYMMDD-HHMMSS.mp4`); files without one are kept. All
+    deletions go into a single commit. Git history still has the files.
+
+    Returns:
+        dict with keys: deleted_reports, deleted_videos, total_files, kept, error (if any)
+    """
+    try:
+        if not GITHUB_TOKEN:
+            return {"error": "GITHUB_TOKEN environment variable is not set."}
+
+        tree = _github_api("GET", f"git/trees/{GITHUB_BRANCH}?recursive=1")
+        if tree.get("truncated"):
+            return {"error": "The reports repo is too large to list in one call - nothing was deleted."}
+
+        cutoff = datetime.now() - timedelta(days=older_than_days)
+        to_delete = []
+        total_files = 0
+        for entry in tree.get("tree", []):
+            path = entry["path"]
+            if entry["type"] != "blob" or not re.fullmatch(r"reports/(videos/[^/]+\.mp4|[^/]+\.html)", path):
+                continue
+            total_files += 1
+            match = re.search(r"_(\d{8}-\d{6})\.(html|mp4)$", path)
+            if match and datetime.strptime(match.group(1), "%Y%m%d-%H%M%S") < cutoff:
+                to_delete.append(path)
+
+        deleted_videos = sum(1 for path in to_delete if path.startswith("reports/videos/"))
+        result = {
+            "deleted_reports": len(to_delete) - deleted_videos,
+            "deleted_videos": deleted_videos,
+            "total_files": total_files,
+            "kept": total_files - len(to_delete),
+        }
+        if to_delete:
+            print(f"Deleting {len(to_delete)} files older than {older_than_days} days from GitHub")
+            upload_files_to_github(
+                {path: None for path in to_delete},
+                f"Delete {len(to_delete)} reports and videos older than {older_than_days} days",
+            )
+        return result
+    except Exception as e:
+        return {"error": f"GitHub cleanup failed: {e}"}
 
 
 def wait_for_github_pages(url, timeout=90, interval=3):
@@ -2615,13 +2668,26 @@ def index():
     pages_pending = False
     error_msg = None
     cleanup_result = None
+    github_cleanup_result = None
 
     if request.method == "POST":
-        # Check if this is a cleanup request (build_id) or generate request (session_url)
+        # Check if this is a cleanup request (build_id), a GitHub cleanup request
+        # (older_than_days) or a generate request (session_url)
         build_id_input = request.form.get("build_id")
+        older_than_days = request.form.get("older_than_days")
         session_url = request.form.get("session_url")
 
-        if build_id_input:
+        if older_than_days is not None:
+            # GitHub cleanup action - delete old reports and videos
+            print(f"GitHub cleanup requested for reports older than {older_than_days} days")
+            if not older_than_days.isdigit():
+                error_msg = "Enter the age in whole days (0 deletes every report)."
+            else:
+                github_cleanup_result = delete_old_reports_from_github(int(older_than_days))
+                if "error" in github_cleanup_result:
+                    error_msg = github_cleanup_result["error"]
+                    github_cleanup_result = None
+        elif build_id_input:
             # Cleanup action - delete failed sessions
             print(f"Cleanup requested for build_id: {build_id_input}")
             cleanup_result = delete_failed_sessions(build_id_input)
@@ -2777,7 +2843,7 @@ def index():
     <html>
     <head>
         <meta charset="UTF-8">
-        <title>BS TestReplay</title>
+        <title>Repro</title>
         <style>
             * {{ box-sizing: border-box; margin: 0; padding: 0; }}
             body {{
@@ -3060,7 +3126,7 @@ def index():
     </head>
     <body>
         <div class="logo">🔍</div>
-        <h1 class="title"><span>BS</span> TestReplay</h1>
+        <h1 class="title"><span>Repro</span></h1>
         <p class="subtitle">Convert test sessions into standalone reproduction pages for QA</p>
         
         <form method="post" class="search-container" id="generateForm" onsubmit="showLoading()">
@@ -3111,6 +3177,16 @@ def index():
         </div>
         ''' if cleanup_result else ''}
 
+        {f'''
+        <div class="result-box result-success">
+            <div class="result-title">✅ GitHub Cleanup Completed!</div>
+            <p class="cleanup-result">
+                Deleted <strong>{(github_cleanup_result or {}).get("deleted_reports", 0)}</strong> reports and <strong>{(github_cleanup_result or {}).get("deleted_videos", 0)}</strong> videos
+                <br>Kept <strong>{(github_cleanup_result or {}).get("kept", 0)}</strong> of <strong>{(github_cleanup_result or {}).get("total_files", 0)}</strong> files in the reports folder
+            </p>
+        </div>
+        ''' if github_cleanup_result else ''}
+
         <!-- Separator between two tools -->
         <div class="separator">
             <div class="separator-line"></div>
@@ -3135,14 +3211,38 @@ def index():
             </div>
         </form>
 
+        <div class="separator">
+            <div class="separator-line"></div>
+            <div class="separator-text">OR</div>
+            <div class="separator-line"></div>
+        </div>
+
+        <!-- Clear old reports from GitHub Section -->
+        <form method="post" class="search-container" id="githubCleanupForm" onsubmit="return showGithubCleanupLoading()">
+            <div class="search-box">
+                <span class="search-icon">🧹</span>
+                <input type="number" name="older_than_days" id="olderThanDays" class="search-input"
+                       placeholder="Delete reports older than N days (0 = all)..."
+                       value="7" min="0" step="1" required>
+            </div>
+            <div class="btn-container">
+                <button type="submit" class="btn btn-cleanup" id="githubCleanupBtn">🧹 Clear GitHub Reports</button>
+            </div>
+            <div class="cleanup-loading" id="githubCleanupLoadingIndicator">
+                <div class="cleanup-spinner"></div>
+                <span>Finding and deleting old reports and videos on GitHub...</span>
+            </div>
+        </form>
+
         <div class="tips">
             <div class="tips-title">💡 Tips</div>
             <strong>Generate Link:</strong> Paste a session URL like: <code>https://automate.browserstack.com/dashboard/v2/sessions/abc123...</code><br>
-            <strong>Delete Failed Sessions:</strong> Enter a Build Name like <code>20260412-064121-6903a</code> OR Hashed ID from URL like <code>910d848cde11c50835c0537c3b8899552067f48c</code>
+            <strong>Delete Failed Sessions:</strong> Enter a Build Name like <code>20260412-064121-6903a</code> OR Hashed ID from URL like <code>910d848cde11c50835c0537c3b8899552067f48c</code><br>
+            <strong>Clear GitHub Reports:</strong> Deletes report pages and their videos older than the given number of days from the <code>reports</code> folder. <code>0</code> deletes all of them. Report links to deleted files stop working.
         </div>
 
         <div class="footer">
-            BS TestReplay v{APP_VERSION} • For QA Teams
+            Repro v{APP_VERSION} • For QA Teams
         </div>
 
         <script>
@@ -3156,6 +3256,18 @@ def index():
                 document.getElementById('cleanupBtn').disabled = true;
                 document.getElementById('cleanupBtn').textContent = '🗑️ Deleting...';
                 document.getElementById('cleanupLoadingIndicator').classList.add('active');
+            }}
+
+            function showGithubCleanupLoading() {{
+                var days = document.getElementById('olderThanDays').value;
+                var what = days === '0' ? 'ALL reports and videos' : 'reports and videos older than ' + days + ' days';
+                if (!confirm('Delete ' + what + ' from GitHub? Their report links will stop working.')) {{
+                    return false;
+                }}
+                document.getElementById('githubCleanupBtn').disabled = true;
+                document.getElementById('githubCleanupBtn').textContent = '🧹 Deleting...';
+                document.getElementById('githubCleanupLoadingIndicator').classList.add('active');
+                return true;
             }}
 
             function copyReportLink(button, url) {{
