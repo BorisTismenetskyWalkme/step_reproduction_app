@@ -1,7 +1,7 @@
-# BS TestReplay - Step Reproduction App
+# Repro - Step Reproduction App
 
 Flask web application for BrowserStack automation test management with two main features:
-1. **Generate Test Reproduction Links** - Convert BS session URLs to shareable test replay links
+1. **Generate Test Reproduction Links** - Convert BS session URLs to shareable Repro report links
 2. **Delete Failed Sessions** - Bulk delete failed test sessions from BrowserStack builds
 
 ## Features
@@ -205,24 +205,139 @@ For exact targeting, always use the hashed ID.
 - Look at recent builds list
 - Copy the correct build name or hashed ID
 
+## BrowserStack MCP Server
+
+`browserstack_mcp_server.py` exposes BrowserStack Automate data and actions as
+MCP tools, so an AI agent (Claude Desktop, a claude.ai custom connector, etc.)
+can inspect and manage builds/sessions directly in chat instead of through
+this web UI.
+
+It reuses the fetching/parsing functions already defined in `app.py`
+(`fetch_session`, `fetch_logs`, `parse_steps`, `extract_eux_bo_url`,
+`get_all_hashed_build_ids`, `delete_failed_sessions`, etc.) by importing the
+module directly, so behavior stays in sync with this app rather than drifting
+in a second copy. Importing `app.py` does not start its Flask server.
+
+### What it can NOT do
+
+There is intentionally no "stop a running build/session" tool. BrowserStack's
+public Automate REST API has no documented endpoint to forcibly terminate an
+in-progress session or build -- a live Selenium session only ends when the
+test's own WebDriver calls `quit()`, or BrowserStack's own idle/session
+timeout fires. The dashboard's own "stop" behavior isn't part of the public
+API.
+
+### Tools
+
+| Tool | Purpose |
+|---|---|
+| `list_builds` | List recent builds, optionally filtered by status (`running`, `done`, `failed`, `timeout`) |
+| `resolve_build_id` | Resolve a build name to its hashed ID(s) |
+| `list_build_sessions` | List sessions inside a build |
+| `get_session` | Full session details + cleaned error reason |
+| `get_session_logs` | Raw text/selenium/console/appium logs |
+| `get_walkme_network_logs` | HAR network log filtered to WalkMe requests |
+| `find_last_successful_run` | Last passing run of the same test |
+| `get_reproduction_summary` | One-shot debugging summary (status, steps, error, EUX BO link, network) -- the JSON equivalent of the HTML page this app generates |
+| `update_session_status` | Tag a session `passed`/`failed` + reason (metadata only, doesn't affect execution) |
+| `delete_session` | Delete one session record |
+| `delete_failed_sessions_in_build` | Bulk-delete failed/error/timeout sessions in a build (wraps this app's cleanup feature) |
+| `delete_build` | Delete a build + all its sessions (`confirm=true` required) |
+| `delete_builds` | Delete up to 5 builds at once (`confirm=true` required) |
+
+### Running it
+
+**Locally, as a Claude Desktop Extension (recommended):**
+
+`browserstack-qa.mcpb` in this folder is a ready-to-install
+[Desktop Extension](https://support.claude.com/en/articles/10949351-getting-started-with-local-mcp-servers-on-claude-desktop).
+It uses the `uv` server type, so Claude Desktop manages the Python
+environment and dependencies itself -- no manual venv, no pip install, and
+no hand-edited `claude_desktop_config.json` (which on some installs,
+including MSIX/Store-packaged ones, isn't at the path you'd expect anyway).
+
+1. In Claude Desktop: **Settings > Extensions > Advanced settings >
+   Extension Developer > "Install Extension..."**, and pick
+   `browserstack-qa.mcpb`.
+2. When prompted, enter your BrowserStack username and access key. Claude
+   Desktop stores the access key in the OS's secure credential store
+   (Credential Manager on Windows), not in a plaintext config file.
+3. Restart Claude Desktop if the tools don't show up immediately in a new
+   chat's connector list.
+
+Source for this bundle lives in `browserstack-qa-mcpb/`. See
+`browserstack-qa-mcpb/BUILD.md` for how to rebuild it (needed if `app.py`
+changes in a way you want reflected in the extension -- it bundles a
+snapshot copy of `app.py`, not a live import, since `.mcpb` bundles are
+meant to be self-contained).
+
+**Locally, via manual stdio config (alternative, if your Claude Desktop
+build supports hand-editing an MCP config file):**
+```bash
+pip install -r requirements-mcp.txt
+python browserstack_mcp_server.py --stdio
+```
+```json
+{
+  "mcpServers": {
+    "browserstack-qa": {
+      "command": "python",
+      "args": ["/absolute/path/to/step_reproduction_app/browserstack_mcp_server.py", "--stdio"],
+      "env": {
+        "AUTOMATION_BS_USER": "your_browserstack_username",
+        "AUTOMATION_BS_PASS": "your_browserstack_access_key"
+      }
+    }
+  }
+}
+```
+Credentials sit in plaintext in this file, so prefer the extension above
+when it's available to you.
+
+**Remote/hosted (Streamable HTTP), e.g. on Render:**
+The `browserstack-mcp` service in `render.yaml` runs it as its own web service
+alongside this app. Set `AUTOMATION_BS_USER`, `AUTOMATION_BS_PASS`, and
+`MCP_API_KEY` (a secret you choose) in Render's dashboard. Then register it
+as a custom/remote connector wherever your MCP client supports one, pointing
+at `https://<your-render-service>.onrender.com/mcp` with header
+`Authorization: Bearer <MCP_API_KEY>`.
+
+**MCP_API_KEY is effectively required once this is public.** Without it,
+anyone who finds the URL can list, tag, and delete your BrowserStack builds
+and sessions. If it's unset, the server logs a loud warning and runs with no
+auth -- fine for a quick local test over `localhost`, not for a public URL.
+
 ## Version
 
-- **Current Version:** 3.3
-- **Last Updated:** April 2026
+- **Current Version:** 4.0
+- **Last Updated:** October 2026
 
 ## File Structure
 
 ```
 step_reproduction_app/
-├── app.py                  # Main Flask application (3056 lines)
-├── README.md               # This documentation file
-└── __pycache__/            # Python cache directory
+├── app.py                       # Main Flask application (3056 lines)
+├── browserstack_mcp_server.py   # MCP server exposing BrowserStack tools (stdio --stdio flag / remote HTTP)
+├── browserstack-qa.mcpb         # Packaged Desktop Extension (install via Claude Desktop Settings > Extensions)
+├── browserstack-qa-mcpb/        # Source for the .mcpb above -- see BUILD.md to rebuild it
+│   ├── manifest.json
+│   ├── pyproject.toml
+│   ├── src/server.py
+│   ├── src/app.py                 # snapshot copy, see BUILD.md
+│   └── BUILD.md
+├── requirements.txt             # Deps for app.py
+├── requirements-mcp.txt         # Deps for browserstack_mcp_server.py
+├── render.yaml                  # Render deploy config (both services)
+├── README.md                    # This documentation file
+└── __pycache__/                 # Python cache directory
 ```
 
 ## Key Dependencies
 
 - **Flask** - Web framework for the application
 - **Requests** - HTTP library for BrowserStack API calls
+- **mcp** (pinned `<2.0`) - MCP server SDK (FastMCP), used by `browserstack_mcp_server.py`
+- **Starlette / uvicorn** - ASGI app + server for the remote MCP transport
 
 ## License
 
