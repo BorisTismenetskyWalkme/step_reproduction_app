@@ -3044,7 +3044,7 @@ def index():
             }}
             .tips {{
                 max-width: 584px;
-                margin-top: 32px;
+                margin-top: 20px;
                 padding: 16px 20px;
                 background: #f0f4ff;
                 border-radius: 8px;
@@ -3059,7 +3059,7 @@ def index():
             .separator {{
                 width: 100%;
                 max-width: 584px;
-                margin: 48px auto;
+                margin: 28px auto;
                 display: flex;
                 align-items: center;
                 gap: 16px;
@@ -3121,6 +3121,29 @@ def index():
                 color: #202124;
                 font-size: 14px;
                 line-height: 1.6;
+            }}
+            .github-cleanup {{
+                margin-top: -8px;
+            }}
+            .github-cleanup-row {{
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 8px;
+                color: #5f6368;
+                font-size: 14px;
+            }}
+            .github-cleanup-days {{
+                width: 56px;
+                padding: 4px 8px;
+                border: 1px solid #dadce0;
+                border-radius: 12px;
+                font-size: 14px;
+                text-align: center;
+            }}
+            .btn-cleanup-small {{
+                padding: 6px 14px;
+                font-size: 13px;
             }}
         </style>
     </head>
@@ -3211,22 +3234,15 @@ def index():
             </div>
         </form>
 
-        <div class="separator">
-            <div class="separator-line"></div>
-            <div class="separator-text">OR</div>
-            <div class="separator-line"></div>
-        </div>
-
-        <!-- Clear old reports from GitHub Section -->
-        <form method="post" class="search-container" id="githubCleanupForm" onsubmit="return showGithubCleanupLoading()">
-            <div class="search-box">
-                <span class="search-icon">🧹</span>
-                <input type="number" name="older_than_days" id="olderThanDays" class="search-input"
-                       placeholder="Delete reports older than N days (0 = all)..."
+        <!-- Clear old reports from GitHub - a compact row under the session cleanup -->
+        <form method="post" class="search-container github-cleanup" id="githubCleanupForm" onsubmit="return showGithubCleanupLoading()"
+              title="Deletes report pages and their videos from the GitHub reports folder. 0 deletes all of them.">
+            <div class="github-cleanup-row">
+                <span>🧹 Clear GitHub reports older than</span>
+                <input type="number" name="older_than_days" id="olderThanDays" class="github-cleanup-days"
                        value="7" min="0" step="1" required>
-            </div>
-            <div class="btn-container">
-                <button type="submit" class="btn btn-cleanup" id="githubCleanupBtn">🧹 Clear GitHub Reports</button>
+                <span>days</span>
+                <button type="submit" class="btn btn-cleanup btn-cleanup-small" id="githubCleanupBtn">Clear GitHub</button>
             </div>
             <div class="cleanup-loading" id="githubCleanupLoadingIndicator">
                 <div class="cleanup-spinner"></div>
@@ -3237,8 +3253,7 @@ def index():
         <div class="tips">
             <div class="tips-title">💡 Tips</div>
             <strong>Generate Link:</strong> Paste a session URL like: <code>https://automate.browserstack.com/dashboard/v2/sessions/abc123...</code><br>
-            <strong>Delete Failed Sessions:</strong> Enter a Build Name like <code>20260412-064121-6903a</code> OR Hashed ID from URL like <code>910d848cde11c50835c0537c3b8899552067f48c</code><br>
-            <strong>Clear GitHub Reports:</strong> Deletes report pages and their videos older than the given number of days from the <code>reports</code> folder. <code>0</code> deletes all of them. Report links to deleted files stop working.
+            <strong>Delete Failed Sessions:</strong> Enter a Build Name like <code>20260412-064121-6903a</code> OR Hashed ID from URL like <code>910d848cde11c50835c0537c3b8899552067f48c</code>
         </div>
 
         <div class="footer">
