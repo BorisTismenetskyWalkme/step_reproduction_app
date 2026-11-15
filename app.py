@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 import re
 import time
@@ -1811,6 +1812,118 @@ def find_last_successful_run(test_name, current_session_id, current_build_id=Non
         return None
 
 
+W3C_ELEMENT_KEY = "element-6066-11e4-a52e-4f735466cecf"
+SIDE_PANEL_URL_MARKERS = ("sidepane", "sidepanel", "side_panel", "side-panel")
+
+
+def _parse_request(line):
+    """(method, path, body) of a REQUEST line in the BrowserStack text log, or None for any other line"""
+    match = re.search(r' REQUEST \[[^\]]*\] (GET|POST|DELETE) (/\S*)', line)
+    if not match:
+        return None
+    body = None
+    rest = line[match.end():].strip()
+    if rest.startswith("{"):
+        try:
+            body = json.loads(rest)
+        except ValueError:
+            body = None
+    return match.group(1), match.group(2), body
+
+
+def _first_string(value):
+    """First string inside a (possibly nested) list of webdriver script args"""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        for item in value:
+            found = _first_string(item)
+            if found:
+                return found
+    return None
+
+
+def _cdp_target_label(target_info):
+    """How a manual tester would call a CDP target: 'side panel' for the extension side panel"""
+    url = (target_info.get("url") or "").lower()
+    if any(marker in url for marker in SIDE_PANEL_URL_MARKERS):
+        return "side panel"
+    return f'"{target_info.get("title") or target_info.get("type") or "extension page"}"'
+
+
+def _index_log(lines, clean_selector):
+    """Pre-scan the log for what the step parser cannot see on a single line.
+
+    Pairs each REQUEST with the RESPONSE after it and returns:
+    - element_labels: element id -> the selector (or locator-script argument) that found it, so a
+      pointer click through /actions, which only carries the element id, can be named
+    - locator_scripts: scripts that returned elements - they locate, a tester never runs them
+    - target_labels: CDP target id -> label, so clicks dispatched into an attached target say where
+    """
+    element_labels, locator_scripts, target_labels = {}, set(), {}
+    pending_label, pending_script = None, None
+    for line in lines:
+        request = _parse_request(line)
+        if request:
+            _, path, body = request
+            pending_label, pending_script = None, None
+            if not isinstance(body, dict):
+                continue
+            if path.endswith("/element") and isinstance(body.get("value"), str):
+                pending_label = clean_selector(body["value"])
+            elif "/execute/" in path and isinstance(body.get("script"), str):
+                pending_script = body["script"]
+                pending_label = clean_selector(_first_string(body.get("args")) or "")
+            continue
+        if " RESPONSE " not in line:
+            continue
+        element_ids = re.findall(rf'"{W3C_ELEMENT_KEY}"\s*:\s*"([^"]+)"', line)
+        if element_ids:
+            if pending_script is not None:
+                locator_scripts.add(pending_script)
+            if pending_label:
+                for element_id in element_ids:
+                    element_labels[element_id] = pending_label
+        if '"targetInfos"' in line:
+            try:
+                infos = json.loads(line[line.index("{"):])["text"]["result"]["targetInfos"]
+                for info in infos:
+                    target_labels[info["targetId"]] = _cdp_target_label(info)
+            except (ValueError, KeyError, TypeError):
+                pass
+        pending_label, pending_script = None, None
+    return element_labels, locator_scripts, target_labels
+
+
+def _pointer_click_step(body, element_labels, log_time):
+    """A Click step for a W3C /actions pointer sequence (ActionChains click) on a known element"""
+    for source in body.get("actions") or []:
+        if source.get("type") != "pointer":
+            continue
+        # clicks as [kind, ...]: a press right after the previous one (no pause between) is a double-click
+        origin_id, clicks, paused_since_press = None, [], True
+        for action in source.get("actions") or []:
+            action_type = action.get("type")
+            if action_type == "pointerMove" and isinstance(action.get("origin"), dict):
+                origin_id = action["origin"].get(W3C_ELEMENT_KEY)
+            elif action_type == "pause" and action.get("duration"):
+                paused_since_press = True
+            elif action_type == "pointerDown":
+                if action.get("button") == 2:
+                    clicks.append("Right-click")
+                elif clicks and clicks[-1] == "Click" and not paused_since_press:
+                    clicks[-1] = "Double-click"
+                else:
+                    clicks.append("Click")
+                paused_since_press = False
+        label = element_labels.get(origin_id)
+        if clicks and label:
+            times = f" ({len(clicks)} times)" if len(clicks) > 1 else ""
+            return {"action": clicks[0], "url": None, "element": f'"{label}"{times}', "value": None,
+                    "failed": False, "log_time": log_time}
+    return None
+
+
 def parse_steps(logs):
     """Parse BrowserStack text logs to extract clean, human-readable steps for QA"""
     steps = []
@@ -1934,6 +2047,13 @@ def parse_steps(logs):
         backspace_indicators = ['backspace', '\ue003', 'back_space']
         return any(b in value_lower for b in backspace_indicators)
 
+    element_labels, locator_scripts, target_labels = _index_log(lines, clean_selector)
+    # commands sent since the last Open - re-opening the same URL after any of them is a refresh
+    commands_since_open = 0
+    # CDP: label of the attached target, and the selector its last Runtime.evaluate queried
+    attached_target_label = None
+    last_cdp_selector = None
+
     for line in lines:
         step = None
         line_lower = line.lower()
@@ -1943,6 +2063,46 @@ def parse_steps(logs):
         ts_match = re.search(timestamp_pattern, line)
         if ts_match:
             line_timestamp = get_relative_time(ts_match.group(1), first_timestamp)
+
+        request = _parse_request(line)
+        if request:
+            method, path, body = request
+            if method != "GET" and not path.endswith("/url"):
+                commands_since_open += 1
+            cdp_call = body.get("text") if isinstance(body, dict) and isinstance(body.get("text"), dict) else None
+
+            # Raw CDP over BrowserStack (seleniumCdp): only the mouse clicks are something a tester does
+            if cdp_call and cdp_call.get("method"):
+                cdp_method = cdp_call["method"]
+                params = cdp_call.get("params") or {}
+                if cdp_method == "Target.attachToTarget":
+                    attached_target_label = target_labels.get(params.get("targetId"))
+                elif cdp_method == "Runtime.evaluate":
+                    selector_match = re.search(r'querySelector\(\s*"([^"]+)"', params.get("expression") or "")
+                    if selector_match:
+                        last_cdp_selector = selector_match.group(1)
+                elif cdp_method == "Input.dispatchMouseEvent" and params.get("type") == "mousePressed":
+                    target = f'"{last_cdp_selector}"' if last_cdp_selector \
+                        else f'at ({params.get("x")}, {params.get("y")})'
+                    where = f" in {attached_target_label}" if attached_target_label and cdp_call.get("sessionId") \
+                        else ""
+                    steps.append({"action": "Click", "url": None, "element": f"{target}{where}", "value": None,
+                                  "failed": False, "log_time": line_timestamp})
+                    last_cdp_selector = None
+                continue
+
+            # ActionChains click: /actions carries only the element id, named from the lookup that found it
+            if path.endswith("/actions") and isinstance(body, dict):
+                pointer_step = _pointer_click_step(body, element_labels, line_timestamp)
+                if pointer_step:
+                    steps.append(pointer_step)
+                continue
+
+            if path.endswith("/refresh"):
+                steps.append({"action": "Refresh the page", "url": None, "element": None, "value": None,
+                              "failed": False, "log_time": line_timestamp})
+                commands_since_open = 0
+                continue
 
         # Skip browserstack_executor annotate commands - internal info only
         if "browserstack_executor" in line_lower and "annotate" in line_lower:
@@ -2029,10 +2189,15 @@ def parse_steps(logs):
                         or 'file://' in url.lower() or 'data:' in url.lower()):
                     continue
                 if url == last_url:
-                    continue
+                    if not commands_since_open:
+                        continue
+                    step = {"action": "Refresh the page", "url": None, "element": None, "value": None,
+                            "failed": False, "log_time": line_timestamp}
+                else:
+                    step = {"action": "Open", "url": url, "element": None, "value": None, "failed": False,
+                            "log_time": line_timestamp}
                 last_url = url
-                step = {"action": "Open", "url": url, "element": None, "value": None, "failed": False,
-                        "log_time": line_timestamp}
+                commands_since_open = 0
                 nav_detected = True
 
         # Also check for mailinator URLs that might be in different format (e.g., window.location or redirect)
@@ -2162,8 +2327,12 @@ def parse_steps(logs):
                 if 'submitForm' in script_content or '/* submitForm */' in script_content:
                     continue
 
-                # Skip very short return statements (internal utility)
-                if script_content.strip().startswith('return ') and len(script_content) < 50:
+                # Skip scripts a tester never runs: ones that only read a value ("return ...", also after
+                # a leading /* name */ comment like selenium's atoms) and ones that locate elements
+                raw_script = body.get("script") if request and isinstance(body, dict) else None
+                if re.sub(r'^\s*/\*.*?\*/', '', script_content, flags=re.DOTALL).strip().startswith('return'):
+                    continue
+                if raw_script is not None and raw_script in locator_scripts:
                     continue
 
                 # Truncate long scripts for display
@@ -2254,6 +2423,9 @@ def parse_steps(logs):
         # Include URL for navigation steps to avoid deduplicating different page visits
         if step["action"] == "Open" and step.get("url"):
             step_signature = f"{step['action']}|{step.get('url', '')}"
+        elif step["action"] == "Refresh the page":
+            # every refresh is its own step - only back-to-back ones collapse (consecutive check below)
+            step_signature = f"{step['action']}|{i}"
         else:
             step_signature = f"{step['action']}|{step.get('element', '')}|{step.get('value', '')}"
 
